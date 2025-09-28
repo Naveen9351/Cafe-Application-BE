@@ -42,7 +42,7 @@ async function createDefaultAdmin() {
     const adminEmail = process.env.ADMIN_EMAIL;
     const adminPassword = process.env.ADMIN_PASSWORD;
 
-
+  
     let admin = await User.findOne({ email: adminEmail });
     if (!admin) {
       const hashedPassword = await bcrypt.hash(adminPassword, 10);
