@@ -9,7 +9,6 @@ router.post(
     body('items').isArray().notEmpty().withMessage('Items are required'),
     body('quantities').isArray().notEmpty().withMessage('Quantities are required'),
     body('total').isFloat({ min: 0 }).withMessage('Total must be a positive number'),
-    body('customerName').notEmpty().trim().withMessage('Customer name is required'),
     body('tableNumber').notEmpty().trim().isInt({ min: 1 }).withMessage('Table number must be a positive integer'),
   ],
   async (req, res) => {
@@ -17,12 +16,12 @@ router.post(
     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
     try {
-      const { items, quantities, total, customerName, tableNumber } = req.body;
+      const { items, quantities, total, tableNumber } = req.body;
       const validItems = await require('../models/MenuItem').find({ _id: { $in: items } });
       if (validItems.length !== items.length) {
         return res.status(400).json({ error: 'Some items are invalid' });
       }
-      const order = new Order({ items, quantities, total, customerName, tableNumber });
+      const order = new Order({ items, quantities, total, tableNumber });
       await order.save();
       global.io.emit('newOrder', order);
       res.json(order);
@@ -35,11 +34,11 @@ router.post(
 
 router.get('/', async (req, res) => {
   try {
-    const { customerName } = req.query;
-    if (!customerName) {
-      return res.status(400).json({ error: 'Customer name is required' });
+    const { tableNumber } = req.query;
+    if (!tableNumber) {
+      return res.status(400).json({ error: 'Table number is required' });
     }
-    const orders = await Order.find({ customerName }).populate('items').sort({ createdAt: -1 });
+    const orders = await Order.find({ tableNumber }).populate('items').sort({ createdAt: -1 });
     res.json(orders);
   } catch (err) {
     console.error('Get orders error:', err);

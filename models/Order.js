@@ -1,6 +1,5 @@
 const mongoose = require('mongoose');
 const OrderSchema = new mongoose.Schema({
-  customerName: { type: String, required: true },
   tableNumber: { type: String, required: true },
   items: [{ type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem', required: true }],
   quantities: [{ type: Number, required: true }],
