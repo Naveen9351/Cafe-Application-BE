@@ -81,7 +81,7 @@ function startServer() {
 
   // Socket.IO setup
   const io = require('socket.io')(server, { 
-    cors: { origin: process.env.FRONTEND_URL || 'https://cafe-application-fe.vercel.app/' } 
+    cors: { origin: process.env.FRONTEND_URL || 'https://cafe-application-fe.vercel.app' } 
   });
   global.io = io; 
   io.on('connection', (socket) => {
