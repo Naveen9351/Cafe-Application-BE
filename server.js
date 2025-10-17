@@ -10,7 +10,7 @@ dotenv.config();
 const app = express();
 
 // Middleware
-app.use(cors({ origin: process.env.FRONTEND_URL || 'https://cafe-application-fe.vercel.app' }));
+app.use(cors({ origin:  'https://cafe-application-fe.vercel.app' }));
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
