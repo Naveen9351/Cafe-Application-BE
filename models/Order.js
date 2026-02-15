@@ -1,12 +1,68 @@
 const mongoose = require('mongoose');
-const OrderSchema = new mongoose.Schema({
+
+const orderSchema = new mongoose.Schema({
+  tenantId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Tenant',
+    required: true,
+    index: true
+  },
+  invoiceId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Invoice',
+    sparse: true
+  },
+  // Table number is now tenant-specific string or ID
   tableNumber: { type: String, required: true },
-  items: [{ type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem', required: true }],
-  quantities: [{ type: Number, required: true }],
+
+  // Who took the order (optional, could be self-service via QR)
+  waiterId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+
+  items: [
+    {
+      item: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem', required: true },
+      quantity: { type: Number, required: true, min: 1 },
+      price: { type: Number, required: true }, // Store price at time of order
+      name: { type: String } // Snapshot of name
+    }
+  ],
+
+  // Financials
+  subTotal: { type: Number, required: true },
+  taxAmount: { type: Number, default: 0 },
   total: { type: Number, required: true },
-  status: { type: String, default: 'pending' },
-  estimatedTime: { type: Number }, // Time in minutes
-  timeSetAt: { type: Date }, // Timestamp when estimatedTime was set
-  createdAt: { type: Date, default: Date.now },
+
+  status: {
+    type: String,
+    enum: ['pending', 'confirmed', 'preparing', 'ready', 'completed', 'cancelled'],
+    default: 'pending',
+    index: true
+  },
+
+  paymentStatus: {
+    type: String,
+    enum: ['pending', 'paid', 'failed', 'refunded'],
+    default: 'pending'
+  },
+
+  orderType: {
+    type: String,
+    enum: ['dine_in', 'takeaway', 'online'],
+    default: 'dine_in'
+  },
+
+  customerDetails: {
+    name: { type: String },
+    phone: { type: String }
+  },
+
+  // Estimated prep time
+  estimatedTime: { type: Number }, // Minutes
+
+  createdAt: { type: Date, default: Date.now }
 });
-module.exports = mongoose.model('Order', OrderSchema);
+
+// Index for efficient querying of a tenant's orders
+orderSchema.index({ tenantId: 1, createdAt: -1 });
+
+module.exports = mongoose.model('Order', orderSchema);
