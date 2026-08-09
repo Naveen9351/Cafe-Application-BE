@@ -23,7 +23,17 @@ const orderSchema = new mongoose.Schema({
       item: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem', required: true },
       quantity: { type: Number, required: true, min: 1 },
       price: { type: Number, required: true }, // Store price at time of order
-      name: { type: String } // Snapshot of name
+      name: { type: String }, // Snapshot of name
+      variant: {
+        name: { type: String },
+        price: { type: Number }
+      },
+      addons: [
+        {
+          name: { type: String },
+          price: { type: Number }
+        }
+      ]
     }
   ],
 
@@ -55,6 +65,21 @@ const orderSchema = new mongoose.Schema({
     name: { type: String },
     phone: { type: String }
   },
+
+  // Split bill info
+  isSplit: { type: Boolean, default: false },
+  splits: [
+    {
+      customerName: { type: String },
+      amount: { type: Number },
+      paymentStatus: { type: String, enum: ['pending', 'paid'], default: 'pending' },
+      paymentMethod: { type: String }
+    }
+  ],
+
+  // Loyalty points
+  loyaltyPointsEarned: { type: Number, default: 0 },
+  loyaltyPointsRedeemed: { type: Number, default: 0 },
 
   // Estimated prep time
   estimatedTime: { type: Number }, // Minutes

@@ -41,7 +41,20 @@ router.get('/', async (req, res) => {
       query.name = { $regex: search, $options: 'i' };
     }
 
-    const items = await MenuItem.find(query).sort({ category: 1, name: 1 });
+    const rawItems = await MenuItem.find(query).sort({ category: 1, name: 1 });
+    
+    // Auto-repair items with missing or non-URL images
+    const items = rawItems.map(item => {
+      const plain = item.toObject();
+      const img = plain.image;
+      if (!img || typeof img !== 'string' || (!img.startsWith('http://') && !img.startsWith('https://') && !img.startsWith('/uploads'))) {
+        plain.image = `https://image.pollinations.ai/prompt/delicious%20food%20photo%20of%20${encodeURIComponent(plain.name || 'food')}%20gourmet%20dish?width=500&height=400&nologo=true`;
+        // Background DB fix
+        MenuItem.updateOne({ _id: plain._id }, { image: plain.image }).exec().catch(() => {});
+      }
+      return plain;
+    });
+
     res.json(items);
   } catch (err) {
     console.error('Get menu error:', err);
@@ -72,21 +85,21 @@ router.post(
         return res.status(500).json({ error: 'Cloudinary not configured' });
       }
 
-      let imageUrl = '';
+      let imageUrl = req.body.image || '';
       if (req.file) {
-        // Fix: Ensure we have a valid tenantId even if req.tenantId is missing (SuperAdmin fallback)
         const folder = req.tenantId ? `cafe/${req.tenantId}/menu` : 'cafe/general/menu';
-
         const result = await cloudinary.uploader.upload(req.file.path, {
           folder: folder
         });
         imageUrl = result.secure_url;
-      } else {
-        return res.status(400).json({ error: 'Image is required' });
+      }
+      
+      if (!imageUrl || typeof imageUrl !== 'string' || (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://') && !imageUrl.startsWith('/uploads'))) {
+        imageUrl = `https://image.pollinations.ai/prompt/delicious%20food%20photo%20of%20${encodeURIComponent(name)}%20gourmet%20dish?width=500&height=400&nologo=true`;
       }
 
       const newItem = new MenuItem({
-        tenantId: req.tenantId || req.user.tenantId, // Fallback
+        tenantId: req.tenantId || req.user?.tenantId || '6a762ef86c9d5c8be315f10a',
         name,
         description,
         price,
@@ -105,7 +118,7 @@ router.post(
 );
 
 // PUT Update Item
-router.put('/:id', [auth, checkRole(['admin'])], upload.single('image'), async (req, res) => {
+router.put('/:id', [auth, checkRole(['admin', 'super_admin'])], upload.single('image'), async (req, res) => {
   try {
     const { name, description, price, category, isAvailable } = req.body;
 
@@ -120,9 +133,13 @@ router.put('/:id', [auth, checkRole(['admin'])], upload.single('image'), async (
       updateData.image = result.secure_url;
     }
 
-    // Ensure we only update items belonging to this tenant
+    let filter = { _id: req.params.id };
+    if (req.tenantId && req.user.role !== 'super_admin') {
+      filter.tenantId = req.tenantId;
+    }
+
     const item = await MenuItem.findOneAndUpdate(
-      { _id: req.params.id, tenantId: req.tenantId },
+      filter,
       updateData,
       { new: true }
     );
@@ -137,14 +154,51 @@ router.put('/:id', [auth, checkRole(['admin'])], upload.single('image'), async (
   }
 });
 
-// DELETE Item
-router.delete('/:id', [auth, checkRole(['admin'])], async (req, res) => {
+// Helper to delete image from Cloudinary
+const deleteCloudinaryImage = async (imageUrl) => {
+  if (!imageUrl || !imageUrl.includes('res.cloudinary.com')) return;
   try {
-    const item = await MenuItem.findOneAndDelete({ _id: req.params.id, tenantId: req.tenantId });
-    if (!item) return res.status(404).json({ error: 'Item not found' });
-    res.json({ message: 'Item deleted' });
+    const urlParts = imageUrl.split('/');
+    const uploadIndex = urlParts.indexOf('upload');
+    if (uploadIndex === -1) return;
+    
+    let publicIdParts = urlParts.slice(uploadIndex + 1);
+    if (publicIdParts[0] && publicIdParts[0].startsWith('v')) {
+      publicIdParts = publicIdParts.slice(1);
+    }
+    
+    const fullFilename = publicIdParts.join('/');
+    const publicId = fullFilename.substring(0, fullFilename.lastIndexOf('.'));
+    
+    if (publicId && cloudinary.config().cloud_name) {
+      console.log(`🗑️ Deleting image from Cloudinary: ${publicId}`);
+      await cloudinary.uploader.destroy(publicId);
+    }
   } catch (err) {
-    res.status(500).json({ error: 'Server error' });
+    console.error("Cloudinary Image Deletion Error:", err.message);
+  }
+};
+
+// DELETE Item
+router.delete('/:id', [auth, checkRole(['admin', 'super_admin'])], async (req, res) => {
+  try {
+    let filter = { _id: req.params.id };
+    if (req.tenantId && req.user.role !== 'super_admin') {
+      filter.tenantId = req.tenantId;
+    }
+
+    const item = await MenuItem.findOne(filter);
+    if (!item) return res.status(404).json({ error: 'Item not found' });
+
+    if (item.image) {
+      await deleteCloudinaryImage(item.image);
+    }
+
+    await MenuItem.deleteOne({ _id: item._id });
+    res.json({ message: 'Item and image deleted successfully' });
+  } catch (err) {
+    console.error('Delete item error:', err);
+    res.status(500).json({ error: 'Server error: ' + err.message });
   }
 });
 

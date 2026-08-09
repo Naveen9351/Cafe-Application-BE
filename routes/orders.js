@@ -6,6 +6,8 @@ const MenuItem = require('../models/MenuItem');
 const auth = require('../middleware/auth');
 const checkRole = require('../middleware/checkRole');
 const mongoose = require('mongoose');
+const deductStockForOrder = require('../utils/stockDeductor');
+const Customer = require('../models/Customer');
 
 // CREATE Order (Public or Staff) - FIXED
 router.post(
@@ -69,13 +71,31 @@ router.post(
         const dbItem = dbItems.find(i => i._id.toString() === clientItem.id);
         if (dbItem) {
           const quantity = clientItem.quantity || 1;
-          const price = dbItem.price;
-          subTotal += price * quantity;
+          
+          // Calculate item base + variant + addons price
+          let basePrice = dbItem.price;
+          let selectedVariant = null;
+          if (clientItem.variant && clientItem.variant.name) {
+            selectedVariant = clientItem.variant;
+            basePrice = clientItem.variant.price;
+          }
+
+          const selectedAddons = clientItem.addons || [];
+          let addonsTotal = 0;
+          selectedAddons.forEach(ad => {
+            addonsTotal += ad.price || 0;
+          });
+
+          const itemTotal = (basePrice + addonsTotal) * quantity;
+          subTotal += itemTotal;
+
           orderItems.push({
             item: dbItem._id,
             name: dbItem.name,
             quantity: quantity,
-            price: price
+            price: basePrice + addonsTotal,
+            variant: selectedVariant,
+            addons: selectedAddons
           });
         }
       }
@@ -83,6 +103,34 @@ router.post(
       const taxRate = 0.05;
       const taxAmount = subTotal * taxRate;
       const total = subTotal + taxAmount;
+
+      // Calculate loyalty points (e.g. 5 points per 100 rs spent)
+      const pointsEarned = Math.round(subTotal * 0.05);
+
+      // Handle customer loyalty update if phone provided
+      let customerPointsUsed = 0;
+      if (customerDetails && customerDetails.phone) {
+        try {
+          let customer = await Customer.findOne({ tenantId, phone: customerDetails.phone });
+          if (!customer) {
+            customer = new Customer({
+              tenantId,
+              name: customerDetails.name || 'Walk-in Customer',
+              phone: customerDetails.phone,
+              loyaltyPoints: pointsEarned,
+              totalSpent: total,
+              visitCount: 1
+            });
+          } else {
+            customer.loyaltyPoints += pointsEarned;
+            customer.totalSpent += total;
+            customer.visitCount += 1;
+          }
+          await customer.save();
+        } catch (crmErr) {
+          console.error('Loyalty/CRM update error:', crmErr);
+        }
+      }
 
       // 3. Create Order
       const newOrder = new Order({
@@ -95,10 +143,14 @@ router.post(
         customerDetails: customerDetails || {},
         status: status || 'pending',
         paymentStatus: paymentStatus || 'pending',
-        estimatedTime: 20 // Default 20 mins, can be updated later
+        loyaltyPointsEarned: pointsEarned,
+        estimatedTime: 20 // Default 20 mins
       });
 
       await newOrder.save();
+
+      // Deduct inventory stock
+      await deductStockForOrder(newOrder);
 
       // INCREMENT ORDER COUNT
       tenant.subscription.orderCount += 1;

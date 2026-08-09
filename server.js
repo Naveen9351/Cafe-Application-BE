@@ -6,6 +6,15 @@ const path = require('path');
 const helmet = require('helmet'); // Suggested adding this
 const http = require('http');
 const socketIo = require('socket.io');
+const dns = require('dns');
+
+// Force Node.js to use Google DNS to bypass local ISP SRV resolution issues
+try {
+  dns.setServers(['8.8.8.8', '8.8.4.4']);
+  console.log('🌐 App DNS resolver set to Google DNS (8.8.8.8)');
+} catch (err) {
+  console.warn('⚠️ Failed to set custom DNS servers:', err.message);
+}
 
 // Load env vars
 dotenv.config();
@@ -15,7 +24,17 @@ const app = express();
 const server = http.createServer(app);
 
 // Middleware
-app.use(cors({ origin: process.env.FRONTEND_URL || '*' })); // Allow all for dev, restrict in prod
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://127.0.0.1:3000'
+].filter(Boolean);
+
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true
+}));
 app.use(express.json());
 // app.use(helmet()); 
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -25,13 +44,19 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/menu', require('./routes/menu'));
 app.use('/api/orders', require('./routes/orders'));
 app.use('/api/tenants', require('./routes/tenant'));
-// app.use('/api/inventory', require('./routes/inventory')); // To be implemented
+app.use('/api/petpooja', require('./routes/petpooja'));
+app.use('/api/ai', require('./routes/ai'));
 
 // Database Connection
+const seedDatabase = require('./utils/seeder');
+
 mongoose.connect(process.env.MONGO_URI, {
   serverSelectionTimeoutMS: 5000
 })
-  .then(() => console.log('✅ MongoDB Connected'))
+  .then(() => {
+    console.log('✅ MongoDB Connected');
+    seedDatabase();
+  })
   .catch(err => console.error('❌ MongoDB Connection Error:', err));
 
 // Socket.io Setup
