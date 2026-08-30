@@ -8,6 +8,8 @@ const cloudinary = require('cloudinary').v2;
 const auth = require('../middleware/auth');
 const Order = require('../models/Order');
 const Inventory = require('../models/Inventory');
+const MenuItem = require('../models/MenuItem');
+const Tenant = require('../models/Tenant');
 
 const upload = multer({ dest: 'uploads/' });
 
@@ -241,7 +243,7 @@ const queryGemini = async (prompt, systemInstruction = "") => {
   return null;
 };
 
-// AI Restaurant Copilot Analyst
+// ── 1. INTERNAL AI RESTAURANT COPILOT (TENANT-SPECIFIC LIVE DATA) ──
 router.post('/copilot', auth, async (req, res) => {
   const { query } = req.body;
   
@@ -252,84 +254,241 @@ router.post('/copilot', auth, async (req, res) => {
   const normalizedQuery = query.toLowerCase().trim();
 
   try {
-    let liveReply = await querySarvam(query, "You are Feast AI powered by Sarvam AI, an intelligent restaurant copilot assistant. You analyze sales, forecast demand, and advise on kitchen operations.");
+    // 1. Gather live tenant data
+    const [menuItems, orders, inventory, tenant] = await Promise.all([
+      MenuItem.find({ tenantId: req.tenantId }),
+      Order.find({ tenantId: req.tenantId }),
+      Inventory.find({ tenantId: req.tenantId }),
+      Tenant.findById(req.tenantId)
+    ]);
+
+    const businessName = tenant?.businessName || 'Your Restaurant';
+    const totalRev = orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+    const avgOrderValue = orders.length > 0 ? (totalRev / orders.length) : 0;
+    const lowStockItems = inventory.filter(i => (i.quantity || 0) <= (i.minThreshold || 10));
+
+    // Menu summary for LLM context
+    const menuSummary = menuItems.map(m => `${m.name} (₹${m.price}, ${m.category}, ${m.type})`).slice(0, 35).join('; ');
+    const inventorySummary = inventory.map(i => `${i.itemName}: ${i.quantity} ${i.unit}`).slice(0, 30).join('; ');
+
+    const tenantContextPrompt = `You are RASTRORATO AI Copilot, the intelligent executive restaurant analyst for ${businessName}.
+You have direct real-time access to ${businessName}'s operational database:
+- Active Menu: ${menuItems.length} items registered in total [${menuSummary || 'No items added yet'}]
+- Sales & Volume: ${orders.length} total orders processed, Total Lifetime Revenue: ₹${totalRev.toFixed(2)}, Average Order Value: ₹${avgOrderValue.toFixed(2)}
+- Current Inventory: ${inventory.length} raw ingredients tracked [${inventorySummary || 'No inventory logged yet'}], Low Stock Alerts: ${lowStockItems.length} items
+
+Instructions:
+1. Answer the user's questions specifically referencing their live store data (menu items, actual prices, sales totals, inventory levels).
+2. If they ask about menu, list their actual items and prices.
+3. If they ask about sales or cost, give them precise metrics from their numbers.
+4. If they ask about inventory, flag low stock items and give replenishment recommendations.
+5. Provide concise, professional, structured bullet-point responses with emoji indicators.`;
+
+    let liveReply = await querySarvam(query, tenantContextPrompt);
     
     if (!liveReply) {
-      liveReply = await queryGemini(query, "You are Feast AI, an intelligent restaurant copilot assistant. You analyze sales, forecast demand, and advise on kitchen operations.");
+      liveReply = await queryGemini(query, tenantContextPrompt);
     }
 
     if (liveReply) {
       return res.json({ reply: liveReply });
     }
 
-    const orders = await Order.find({ tenantId: req.tenantId });
-    const totalRev = orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-    const lowStock = await Inventory.find({ tenantId: req.tenantId });
-
+    // Dynamic Intelligent Fallback using exact tenant data
     if (['hi', 'hello', 'hey', 'hi there', 'greetings', 'help'].includes(normalizedQuery) || normalizedQuery.includes('who are you') || normalizedQuery.includes('what can you do')) {
-      const reply = `Hello! 👋 I'm Feast AI Copilot (Sarvam AI Enabled), your intelligent cafe analytics & operations manager.
+      const reply = `Hello! 👋 I'm **RASTRORATO AI Copilot**, your executive operations manager for **${businessName}**.
 
-Here is a quick snapshot of your cafe right now:
+Here is your live business summary right now:
+- 📋 **Active Menu:** ${menuItems.length} dishes/beverages registered
 - 📊 **Total Orders:** ${orders.length} orders processed
-- 💰 **Total Revenue:** ₹${totalRev.toFixed(2)}
-- 📦 **Inventory Status:** ${lowStock.length} raw ingredients tracked
+- 💰 **Total Revenue:** ₹${totalRev.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+- 📦 **Inventory Status:** ${inventory.length} ingredients tracked (${lowStockItems.length} low-stock alerts)
 
-Try asking me:
-- "Why did sales drop this week?"
-- "What is tomorrow's demand forecast?"
-- "Check ingredient levels"`;
+What would you like to explore today?
+- *"Show me my menu items and pricing"*
+- *"Analyze my sales & average order value"*
+- *"Which ingredients are low on stock?"*
+- *"Suggest a weekend promotion for my bestsellers"*`;
       return res.json({ reply });
     }
 
-    if (normalizedQuery.includes('sales') || normalizedQuery.includes('revenue') || normalizedQuery.includes('drop') || normalizedQuery.includes('earn')) {
-      const reply = `📊 Revenue Analysis Report for your cafe:
-- **Total Lifetime Revenue:** ₹${totalRev.toFixed(2)} across ${orders.length} orders.
-- **Recent Sales Trend:** Evening orders (5 PM - 8 PM) show highest volume.
-- **Top Performing Category:** Coffee & Specialty Beverages.
-- 💡 **AI Recommendation:** Offer a "Happy Hour" 15% combo discount between 4 PM - 6 PM to boost off-peak revenues.`;
-      
+    if (normalizedQuery.includes('menu') || normalizedQuery.includes('dish') || normalizedQuery.includes('item') || normalizedQuery.includes('price')) {
+      if (menuItems.length === 0) {
+        return res.json({ reply: `You currently have **0 items** in your menu database. You can add items via the Menu tab or use **Import Menu via RASTRORATO AI** to scan a paper menu card!` });
+      }
+      const topItems = menuItems.slice(0, 10).map(m => `• **${m.name}** — ₹${m.price} (${m.category})`).join('\n');
+      const reply = `📋 **Menu Summary for ${businessName}** (${menuItems.length} total items):
+
+${topItems}${menuItems.length > 10 ? `\n\n*(+ ${menuItems.length - 10} more items in your catalog)*` : ''}
+
+💡 **AI Pricing Recommendation:** Your average item price is ₹${(menuItems.reduce((s, i) => s + (i.price || 0), 0) / menuItems.length).toFixed(0)}. Consider pairing high-margin beverages with snacks as dynamic combos to lift ticket sizes.`;
       return res.json({ reply });
     }
 
-    if (normalizedQuery.includes('forecast') || normalizedQuery.includes('predict') || normalizedQuery.includes('tomorrow') || normalizedQuery.includes('demand')) {
-      const reply = `🔮 AI Demand Forecast for Tomorrow:
-- ☕ Cappuccino / Coffee: ~140 orders predicted (High Demand)
-- 🥪 Sandwiches & Snacks: ~75 orders predicted
-- 🍰 Desserts: ~45 orders predicted
-
-⏰ **Expected Peak Hours:** 5:00 PM – 8:00 PM
-💡 **Prep Tip:** Ensure milk & espresso beans are restocked before 4:00 PM to avoid kitchen delays during peak rush.`;
-
+    if (normalizedQuery.includes('sales') || normalizedQuery.includes('revenue') || normalizedQuery.includes('earn') || normalizedQuery.includes('performance')) {
+      const reply = `📊 **Sales & Revenue Report for ${businessName}**:
+- **Lifetime Gross Revenue:** ₹${totalRev.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+- **Total Orders Logged:** ${orders.length} orders
+- **Average Ticket Size:** ₹${avgOrderValue.toFixed(2)}
+- 📈 **Traffic Trend:** Highest customer volume typically occurs during lunch (1 PM - 3 PM) and evening dinner (6:30 PM - 9 PM).
+- 💡 **Growth Action:** Launching a digital QR loyalty reward for returning guests can boost weekly repeat frequency by 18%.`;
       return res.json({ reply });
     }
 
-    if (normalizedQuery.includes('inventory') || normalizedQuery.includes('stock') || normalizedQuery.includes('milk') || normalizedQuery.includes('ingredient')) {
-      const milk = lowStock.find(i => i.itemName.toLowerCase().includes('milk'));
-      const currentStock = milk ? `${milk.quantity} ${milk.unit}` : '18 L';
-      
-      const reply = `⚠️ Inventory Advisor Report:
-- **Tracked Ingredients:** ${lowStock.length} items in stock.
-- **Milk Reserve:** Currently at ${currentStock}.
-- **Forecasted Usage:** 20 L required for peak hours tomorrow.
-- 💡 **Recommended Action:** Place a Purchase Order for extra dairy & packaging material via the Inventory tab.`;
+    if (normalizedQuery.includes('inventory') || normalizedQuery.includes('stock') || normalizedQuery.includes('milk') || normalizedQuery.includes('ingredient') || normalizedQuery.includes('po')) {
+      const lowItemsText = lowStockItems.length > 0
+        ? lowStockItems.map(i => `⚠️ **${i.itemName}:** ${i.quantity} ${i.unit} (Threshold: ${i.minThreshold || 10} ${i.unit})`).join('\n')
+        : '✅ All tracked ingredients are currently above minimum safety thresholds.';
 
+      const reply = `📦 **Inventory & Stock Report for ${businessName}**:
+- **Total Ingredients Monitored:** ${inventory.length} items
+- **Low Stock Warnings (${lowStockItems.length}):**
+${lowItemsText}
+
+💡 **Action Required:** Open the Inventory tab to auto-generate and dispatch supplier purchase orders with 1 click.`;
       return res.json({ reply });
     }
 
-    const reply = `Feast AI Copilot:
-I can analyze sales trends, predict demand, and inspect ingredient levels for your cafe!
-
-Current Cafe Stats:
-- Total Orders: ${orders.length} | Revenue: ₹${totalRev.toFixed(2)}
+    const reply = `🤖 **RASTRORATO AI Copilot for ${businessName}**:
+I have full visibility over your ${menuItems.length} menu items, ${orders.length} orders (₹${totalRev.toFixed(0)} total volume), and ${inventory.length} inventory lines.
 
 Try asking:
-- "Show me my sales summary"
-- "What is tomorrow's demand forecast?"
-- "Is milk running low?"`;
+- "List my top menu items and prices"
+- "What is my total sales summary?"
+- "Check raw ingredient inventory levels"
+- "Draft a WhatsApp promo message for my customers"`;
 
-    res.json({ reply });
+    return res.json({ reply });
 
   } catch (err) {
+    console.error("Copilot Error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── 2. PUBLIC AI PRODUCT CONCIERGE (FOR LANDING PAGE VISITORS) ──
+router.post('/public-copilot', async (req, res) => {
+  const { query } = req.body;
+  
+  if (!query) {
+    return res.status(400).json({ error: "Query is required" });
+  }
+
+  const normalizedQuery = query.toLowerCase().trim();
+
+  const publicConciergePrompt = `You are the official RASTRORATO AI Product Concierge for prospective restaurant and cafe owners exploring the RASTRORATO website (The Operating System for High-Growth Restaurants).
+
+Platform Overview:
+- RASTRORATO is an all-in-one cloud restaurant OS unifying:
+  1. Ultra-Fast Cloud POS: Split bills, modifiers, table status mapping, fast checkout, digital receipts.
+  2. Zero-Latency Kitchen KDS: Real-time ticket dispatch, cooking countdowns, color-coded prep delays.
+  3. Smart Recipe Inventory & Auto-PO: Recipe-level stock depletion, low-stock threshold alerts, 1-click vendor POs.
+  4. Digital QR Dining: Instant camera scan menu, dietary filters, contactless direct UPI payment with 0% commission.
+  5. Aggregator Integration: Consolidates Zomato, Swiggy, and direct delivery orders into a single screen.
+  6. AI Copilot: Weather demand prediction, sales forecasting, high-margin dish combos, and auto paper menu digitizer.
+- Hardware Compatibility: Hardware-agnostic! Runs on iPads, Android tablets, Mac/Windows laptops, standard thermal receipt & KOT printers, cash drawers.
+- Pricing Plans:
+  - Starter Kiosk: ₹1,499/mo (Annual) or ₹1,999/mo (Monthly) - Perfect for coffee bars & single kiosks.
+  - Growth Pro: ₹2,999/mo (Annual) or ₹3,999/mo (Monthly) - Most Popular, includes full KDS, AI Copilot, Inventory & Loyalty.
+  - Franchise Enterprise: ₹5,999/mo (Annual) - For multi-location chains, includes Super Admin & Commissary hub.
+- Free Trial & Demos: 14-day free trial (no credit card needed) and free 30-minute 1-on-1 personalized demos.
+
+Provide concise, enthusiastic, and helpful answers formatted with clean markdown bullet points. Encourage users to start a free trial or book a demo!`;
+
+  try {
+    let liveReply = await querySarvam(query, publicConciergePrompt);
+    
+    if (!liveReply) {
+      liveReply = await queryGemini(query, publicConciergePrompt);
+    }
+
+    if (liveReply) {
+      return res.json({ reply: liveReply });
+    }
+
+    // Dynamic Intelligent Fallback for Landing Page Visitors
+    if (['hi', 'hello', 'hey', 'hi there', 'greetings', 'help'].includes(normalizedQuery) || normalizedQuery.includes('what is rastrorato') || normalizedQuery.includes('who are you')) {
+      const reply = `Hello! 👋 I'm the **RASTRORATO AI Concierge**.
+
+**RASTRORATO** is the all-in-one operating system engineered for modern restaurants, cafes, pizzerias, QSRs, and cloud kitchens.
+
+Here is what we empower you to do:
+- ⚡ **Ultra-Fast POS:** 3-click bill settlements & instant WhatsApp invoices.
+- 🍳 **Live Kitchen KDS:** Zero paper ticket chaos with color-coded prep countdowns.
+- 📦 **Recipe-Level Inventory:** Auto-depleting ingredient stock meters & automated vendor POs.
+- 📱 **0% Commission QR Ordering:** Dynamic digital menus with instant UPI payment.
+- 🤖 **RASTRORATO AI:** 1-click paper menu scanner and predictive sales forecasting.
+
+Would you like to know about **pricing plans**, **hardware compatibility**, or **booking a live demo**?`;
+      return res.json({ reply });
+    }
+
+    if (normalizedQuery.includes('price') || normalizedQuery.includes('cost') || normalizedQuery.includes('plan') || normalizedQuery.includes('subscription')) {
+      const reply = `💰 **RASTRORATO Transparent Pricing Plans**:
+
+1. **Starter Kiosk (₹1,499/mo)**:
+   - Unlimited Cloud POS, QR Dine-In, Basic KOT, Daily Revenue Reports. Perfect for coffee kiosks and single stations.
+2. **Growth Pro (₹2,999/mo) — ⭐ Most Popular**:
+   - Full Kitchen KDS, Smart Recipe Inventory & POs, CRM & Loyalty, RASTRORATO AI Copilot, 24/7 Priority Support.
+3. **Franchise Enterprise (₹5,999/mo)**:
+   - Multi-Tenant Super Admin, Central Commissary Sync, Custom White-Label QR, Dedicated Account Strategist.
+
+🎁 *All plans include a 14-day free trial with zero credit card required!*`;
+      return res.json({ reply });
+    }
+
+    if (normalizedQuery.includes('hardware') || normalizedQuery.includes('printer') || normalizedQuery.includes('ipad') || normalizedQuery.includes('tablet') || normalizedQuery.includes('device')) {
+      const reply = `💻 **Zero Proprietary Hardware Lock-In**:
+
+RASTRORATO is 100% cloud-native and runs on the devices you already own:
+- 📱 **iPads & Android Tablets:** Waitstaff & cashier mobile billing terminals.
+- 💻 **Mac & Windows Laptops/PCs:** Admin & manager reporting consoles.
+- 🖨️ **Thermal Receipt & KOT Printers:** USB, Bluetooth, Wi-Fi & LAN printers (Epson, TVS, Star, Citizen).
+- ⚡ **Dynamic UPI QR Displays:** Auto-generated bill settlement amounts.
+- 💳 **Cash Drawers:** Standard RJ11 kick-out support.`;
+      return res.json({ reply });
+    }
+
+    if (normalizedQuery.includes('kot') || normalizedQuery.includes('kitchen') || normalizedQuery.includes('kds')) {
+      const reply = `🍳 **Zero-Latency Kitchen Display System (KDS)**:
+
+- Orders placed via POS or QR tables appear instantly on kitchen screens via WebSockets.
+- Color-coded timers: Green (Just In), Yellow (Prepping), Red (Urgent / Delayed).
+- Station-based routing (e.g. Barista Station vs Pizza Oven Station vs Dessert Counter).
+- One-tap status updates notify waiters and guests when food is ready for pickup!`;
+      return res.json({ reply });
+    }
+
+    if (normalizedQuery.includes('menu') || normalizedQuery.includes('import') || normalizedQuery.includes('scan')) {
+      const reply = `📷 **Instant AI Paper Menu Digitizer**:
+
+- Simply take a photo or upload a PDF of your existing physical menu card.
+- RASTRORATO AI extracts dish names, prices, categories, and descriptions in <10 seconds.
+- Automatically pairs high-res photos and drafts items for your 1-click review and publish!`;
+      return res.json({ reply });
+    }
+
+    if (normalizedQuery.includes('trial') || normalizedQuery.includes('demo') || normalizedQuery.includes('start') || normalizedQuery.includes('register')) {
+      const reply = `🚀 **Getting Started is Easy**:
+
+1. **Start Free Trial:** Click the **Start Free Trial** button on top right to get full access for 14 days in under 2 minutes.
+2. **Book a 1-on-1 Demo:** Scroll down to our **Schedule Free Demo** form for a 30-minute personalized walkthrough and free menu digitization assistance!`;
+      return res.json({ reply });
+    }
+
+    const reply = `💡 **RASTRORATO AI Concierge**:
+I can answer any questions about POS fast billing, kitchen KOT displays, recipe inventory, hardware compatibility, pricing, and onboarding setup!
+
+Try asking:
+- "What features are included in RASTRORATO?"
+- "Which pricing plan is best for my cafe?"
+- "Does RASTRORATO work with my existing thermal printers?"
+- "How does the AI menu scanner work?"`;
+
+    return res.json({ reply });
+
+  } catch (err) {
+    console.error("Public Copilot Error:", err);
     res.status(500).json({ error: err.message });
   }
 });
