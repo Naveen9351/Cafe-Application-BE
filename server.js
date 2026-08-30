@@ -50,9 +50,7 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token', 'Origin', 'Accept', 'X-Requested-With']
 }));
 
-// Handle preflight OPTIONS across all routes
-app.options('*', cors());
-
+// Express cors middleware automatically handles preflight OPTIONS requests for all registered endpoints.
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
