@@ -62,7 +62,6 @@ const tenantSchema = new mongoose.Schema({
 });
 
 // Index for faster lookups
-tenantSchema.index({ email: 1 });
 tenantSchema.index({ 'subscription.isActive': 1 });
 
 module.exports = mongoose.model('Tenant', tenantSchema);

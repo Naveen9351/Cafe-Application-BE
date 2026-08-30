@@ -25,8 +25,7 @@ const userSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-// Compound index for unique email (global uniqueness usually preferred for SaaS)
-userSchema.index({ email: 1 });
+// Compound index for role filtering within tenant
 userSchema.index({ tenantId: 1, role: 1 });
 
 module.exports = mongoose.model('User', userSchema);
