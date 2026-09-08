@@ -64,6 +64,7 @@ app.use('/api/orders', require('./routes/orders'));
 app.use('/api/tenants', require('./routes/tenant'));
 app.use('/api/petpooja', require('./routes/petpooja'));
 app.use('/api/ai', require('./routes/ai'));
+app.use('/api/leads', require('./routes/leads'));
 
 // Database Connection
 const seedDatabase = require('./utils/seeder');
