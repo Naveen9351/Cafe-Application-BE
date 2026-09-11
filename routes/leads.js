@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Lead = require('../models/Lead');
 const auth = require('../middleware/auth');
+const checkRole = require('../middleware/checkRole');
 
 // @route   POST /api/leads
 // @desc    Submit a demo request / restaurant lead
@@ -55,9 +56,9 @@ router.post('/', async (req, res) => {
 });
 
 // @route   GET /api/leads
-// @desc    Get all demo leads (Super Admin / Staff)
-// @access  Protected / Public Fallback for Demo
-router.get('/', async (req, res) => {
+// @desc    Get all demo leads (Super Admin Only)
+// @access  Protected
+router.get('/', [auth, checkRole(['super_admin'])], async (req, res) => {
   try {
     const leads = await Lead.find().sort({ createdAt: -1 }).limit(100);
     res.json({ success: true, count: leads.length, leads });
@@ -68,9 +69,9 @@ router.get('/', async (req, res) => {
 });
 
 // @route   PATCH /api/leads/:id
-// @desc    Update lead status
+// @desc    Update lead status (Super Admin Only)
 // @access  Protected
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', [auth, checkRole(['super_admin'])], async (req, res) => {
   try {
     const { status, notes } = req.body;
     const updateData = {};

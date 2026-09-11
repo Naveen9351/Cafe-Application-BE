@@ -9,11 +9,46 @@ const mongoose = require('mongoose');
 const deductStockForOrder = require('../utils/stockDeductor');
 const Customer = require('../models/Customer');
 
-// CREATE Order (Public or Staff) - FIXED
+// Helper to calculate date boundaries
+const getDateRangeFilter = (range, startDate, endDate) => {
+  const now = new Date();
+  let start = null;
+  let end = null;
+
+  if (range === 'today') {
+    start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    end = new Date(now);
+    end.setHours(23, 59, 59, 999);
+  } else if (range === 'this_week') {
+    const day = now.getDay();
+    const diff = now.getDate() - day + (day === 0 ? -6 : 1); // Monday start
+    start = new Date(now);
+    start.setDate(diff);
+    start.setHours(0, 0, 0, 0);
+    end = new Date(now);
+    end.setHours(23, 59, 59, 999);
+  } else if (range === 'this_month') {
+    start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+  } else if (range === 'custom' && startDate && endDate) {
+    start = new Date(startDate);
+    start.setHours(0, 0, 0, 0);
+    end = new Date(endDate);
+    end.setHours(23, 59, 59, 999);
+  }
+
+  if (start && end) {
+    return { createdAt: { $gte: start, $lte: end } };
+  }
+  return {};
+};
+
+// CREATE Order (Public or Staff)
 router.post(
   '/',
   [
-    body('items').isArray().notEmpty(),
+    body('items').isArray().notEmpty().withMessage('Items array is required'),
     body('tenantId').notEmpty().withMessage('Tenant ID is required')
   ],
   async (req, res) => {
@@ -44,7 +79,6 @@ router.post(
       if (new Date() - new Date(tenant.subscription.startDate) > thirtyDays) {
         tenant.subscription.orderCount = 0;
         tenant.subscription.startDate = new Date();
-        // We don't save yet, we save at the end after incrementing
       }
 
       // Check Order Limit
@@ -53,7 +87,7 @@ router.post(
       }
 
       // 1. Fetch all items (Security: Verify prices server-side)
-      const itemIds = items.map(i => i.id);
+      const itemIds = items.map(i => i.id).filter(id => mongoose.Types.ObjectId.isValid(id));
       const dbItems = await MenuItem.find({
         _id: { $in: itemIds },
         tenantId: tenantId
@@ -63,7 +97,7 @@ router.post(
         return res.status(400).json({ error: 'Invalid items or items not found for this tenant' });
       }
 
-      // 2. Calculate Totals
+      // 2. Calculate Totals with Discount Support
       let subTotal = 0;
       const orderItems = [];
 
@@ -72,8 +106,17 @@ router.post(
         if (dbItem) {
           const quantity = clientItem.quantity || 1;
           
-          // Calculate item base + variant + addons price
           let basePrice = dbItem.price;
+
+          // Apply Item Discount if active
+          if (dbItem.discount && dbItem.discount.isDiscounted) {
+            if (dbItem.discount.type === 'percentage') {
+              basePrice = Math.max(0, Math.round(basePrice * (1 - dbItem.discount.value / 100)));
+            } else if (dbItem.discount.type === 'amount') {
+              basePrice = Math.max(0, basePrice - dbItem.discount.value);
+            }
+          }
+
           let selectedVariant = null;
           if (clientItem.variant && clientItem.variant.name) {
             selectedVariant = clientItem.variant;
@@ -100,15 +143,14 @@ router.post(
         }
       }
 
-      const taxRate = 0.05;
-      const taxAmount = subTotal * taxRate;
-      const total = subTotal + taxAmount;
+      const taxRate = 0.05; // 5% GST
+      const taxAmount = Math.round(subTotal * taxRate * 100) / 100;
+      const total = Math.round((subTotal + taxAmount) * 100) / 100;
 
-      // Calculate loyalty points (e.g. 5 points per 100 rs spent)
+      // Calculate loyalty points (5% cashback)
       const pointsEarned = Math.round(subTotal * 0.05);
 
       // Handle customer loyalty update if phone provided
-      let customerPointsUsed = 0;
       if (customerDetails && customerDetails.phone) {
         try {
           let customer = await Customer.findOne({ tenantId, phone: customerDetails.phone });
@@ -135,6 +177,7 @@ router.post(
       // 3. Create Order
       const newOrder = new Order({
         tenantId,
+        orderNumber: `${Math.floor(1000 + Math.random() * 9000)}`,
         tableNumber: tableNumber || 'Counter',
         items: orderItems,
         subTotal,
@@ -144,7 +187,7 @@ router.post(
         status: status || 'pending',
         paymentStatus: paymentStatus || 'pending',
         loyaltyPointsEarned: pointsEarned,
-        estimatedTime: 20 // Default 20 mins
+        estimatedTime: 20
       });
 
       await newOrder.save();
@@ -152,13 +195,13 @@ router.post(
       // Deduct inventory stock
       await deductStockForOrder(newOrder);
 
-      // INCREMENT ORDER COUNT
+      // Increment Tenant Order Count
       tenant.subscription.orderCount += 1;
       await tenant.save();
 
       // 4. Emit Socket Event
       if (global.io) {
-        global.io.to(tenantId).emit('newOrder', newOrder);
+        global.io.to(tenantId.toString()).emit('newOrder', newOrder);
       }
 
       res.status(201).json(newOrder);
@@ -170,24 +213,6 @@ router.post(
   }
 );
 
-// UPDATE Estimated Time (Admin/Staff)
-router.put('/:id/time', auth, async (req, res) => {
-  try {
-    const { time } = req.body; // in minutes
-    const order = await Order.findByIdAndUpdate(req.params.id, { estimatedTime: time }, { new: true });
-
-    if (!order) return res.status(404).json({ error: "Order not found" });
-
-    if (global.io) {
-      global.io.to(order.tenantId.toString()).emit('orderUpdate', order);
-    }
-
-    res.json(order);
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
 // GET Single Order Status (Public - for Order Tracking)
 router.get('/status/:id', async (req, res) => {
   try {
@@ -196,8 +221,7 @@ router.get('/status/:id', async (req, res) => {
     }
 
     const order = await Order.findById(req.params.id)
-      .populate('tenantId', 'name address phone') // Populate tenant info for branding
-      .select('-items.item'); // Exclude raw item refs if not needed
+      .populate('tenantId', 'name address phone settings');
 
     if (!order) {
       return res.status(404).json({ error: 'Order not found' });
@@ -215,7 +239,6 @@ router.get('/', auth, async (req, res) => {
   try {
     let tenantId = req.user.tenantId;
 
-    // Super Admin can filter by tenantId in query
     if (req.user.role === 'super_admin' && req.query.tenantId) {
       tenantId = req.query.tenantId;
     }
@@ -224,18 +247,18 @@ router.get('/', auth, async (req, res) => {
       return res.status(400).json({ error: 'Tenant context missing' });
     }
 
-    if (!mongoose.Types.ObjectId.isValid(tenantId)) {
-      return res.status(400).json({ error: "Invalid Tenant ID" });
-    }
-
-    const { status } = req.query;
+    const { status, range, startDate, endDate } = req.query;
     let query = {};
     if (tenantId) query.tenantId = tenantId;
     if (status) query.status = status;
 
+    // Apply Date Range Filter
+    const dateFilter = getDateRangeFilter(range, startDate, endDate);
+    query = { ...query, ...dateFilter };
+
     const orders = await Order.find(query)
       .sort({ createdAt: -1 })
-      .limit(100);
+      .limit(200);
 
     res.json(orders);
   } catch (err) {
@@ -244,7 +267,7 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
-// GET Analytics (Admin - Revenue)
+// GET Analytics with Date Range Filter (Admin)
 router.get('/analytics', auth, checkRole(['admin', 'super_admin']), async (req, res) => {
   try {
     const tenantId = req.user.tenantId || req.query.tenantId;
@@ -254,21 +277,24 @@ router.get('/analytics', auth, checkRole(['admin', 'super_admin']), async (req, 
       return res.status(400).json({ error: 'Invalid Tenant ID format' });
     }
 
-    // Aggregation for Total Revenue of this Tenant
-    const revenue = await Order.aggregate([
-      { $match: { tenantId: new mongoose.Types.ObjectId(tenantId), status: 'completed' } },
+    const { range, startDate, endDate } = req.query;
+    const dateFilter = getDateRangeFilter(range || 'this_week', startDate, endDate);
+
+    const matchStage = {
+      tenantId: new mongoose.Types.ObjectId(tenantId),
+      status: { $nin: ['cancelled'] },
+      ...(dateFilter.createdAt ? { createdAt: dateFilter.createdAt } : {})
+    };
+
+    // Aggregation for Total Revenue of this Tenant in the selected range
+    const revenueAgg = await Order.aggregate([
+      { $match: matchStage },
       { $group: { _id: null, total: { $sum: '$total' }, count: { $sum: 1 } } }
     ]);
 
-    // Daily Revenue (Last 7 Days)
-    const dailyRevenue = await Order.aggregate([
-      {
-        $match: {
-          tenantId: new mongoose.Types.ObjectId(tenantId),
-          status: 'completed',
-          createdAt: { $gte: new Date(new Date() - 7 * 24 * 60 * 60 * 1000) }
-        }
-      },
+    // Trend grouping
+    const trendAgg = await Order.aggregate([
+      { $match: matchStage },
       {
         $group: {
           _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
@@ -279,14 +305,17 @@ router.get('/analytics', auth, checkRole(['admin', 'super_admin']), async (req, 
       { $sort: { _id: 1 } }
     ]);
 
-    // Fetch Tenant for Historical Data
-    const Tenant = require('../models/Tenant');
-    const tenant = await Tenant.findById(tenantId);
+    const grossSales = revenueAgg[0]?.total || 0;
+    const totalOrders = revenueAgg[0]?.count || 0;
+    const avgTicket = totalOrders > 0 ? Math.round(grossSales / totalOrders) : 0;
+    const netProfit = Math.round(grossSales * 0.42);
 
     res.json({
-      totalRevenue: (revenue[0]?.total || 0) + (tenant?.analytics?.historicalRevenue || 0),
-      totalOrders: (revenue[0]?.count || 0) + (tenant?.analytics?.historicalOrderCount || 0),
-      dailyStats: dailyRevenue
+      grossSales,
+      totalOrders,
+      avgTicket,
+      netProfit,
+      dailyStats: trendAgg
     });
 
   } catch (err) {
@@ -295,24 +324,32 @@ router.get('/analytics', auth, checkRole(['admin', 'super_admin']), async (req, 
   }
 });
 
-
-// UPDATE Order Status (Admin/Staff only)
+// UPDATE Order Status (Admin/Staff with strict Tenant Scoping)
 router.put('/:id/status', auth, async (req, res) => {
   try {
     const { status } = req.body;
 
-    // TODO: Add validation for status enum
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ error: 'Invalid Order ID' });
     }
 
+    const validStatuses = ['pending', 'preparing', 'ready', 'out_for_delivery', 'completed', 'cancelled'];
+    if (status && !validStatuses.includes(status)) {
+      return res.status(400).json({ error: 'Invalid order status value' });
+    }
+
+    const filter = { _id: req.params.id };
+    if (req.user.role !== 'super_admin' && req.user.tenantId) {
+      filter.tenantId = req.user.tenantId;
+    }
+
     const order = await Order.findOneAndUpdate(
-      { _id: req.params.id }, // Anyone with auth and ID can try, but really should check tenant
+      filter,
       { status },
       { new: true }
     );
 
-    if (!order) return res.status(404).json({ error: 'Order not found' });
+    if (!order) return res.status(404).json({ error: 'Order not found or unauthorized' });
 
     // Emit update to tenant room
     if (global.io) {

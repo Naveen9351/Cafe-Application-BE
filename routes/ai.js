@@ -271,7 +271,7 @@ router.post('/copilot', auth, async (req, res) => {
     const menuSummary = menuItems.map(m => `${m.name} (₹${m.price}, ${m.category}, ${m.type})`).slice(0, 35).join('; ');
     const inventorySummary = inventory.map(i => `${i.itemName}: ${i.quantity} ${i.unit}`).slice(0, 30).join('; ');
 
-    const tenantContextPrompt = `You are RASTRORATO AI Copilot, the intelligent executive restaurant analyst for ${businessName}.
+    const tenantContextPrompt = `You are SERVIQ AI Copilot, the intelligent executive restaurant analyst for ${businessName}.
 You have direct real-time access to ${businessName}'s operational database:
 - Active Menu: ${menuItems.length} items registered in total [${menuSummary || 'No items added yet'}]
 - Sales & Volume: ${orders.length} total orders processed, Total Lifetime Revenue: ₹${totalRev.toFixed(2)}, Average Order Value: ₹${avgOrderValue.toFixed(2)}
@@ -296,7 +296,7 @@ Instructions:
 
     // Dynamic Intelligent Fallback using exact tenant data
     if (['hi', 'hello', 'hey', 'hi there', 'greetings', 'help'].includes(normalizedQuery) || normalizedQuery.includes('who are you') || normalizedQuery.includes('what can you do')) {
-      const reply = `Hello! 👋 I'm **RASTRORATO AI Copilot**, your executive operations manager for **${businessName}**.
+      const reply = `Hello! 👋 I'm **SERVIQ AI Copilot**, your executive operations manager for **${businessName}**.
 
 Here is your live business summary right now:
 - 📋 **Active Menu:** ${menuItems.length} dishes/beverages registered
@@ -314,7 +314,7 @@ What would you like to explore today?
 
     if (normalizedQuery.includes('menu') || normalizedQuery.includes('dish') || normalizedQuery.includes('item') || normalizedQuery.includes('price')) {
       if (menuItems.length === 0) {
-        return res.json({ reply: `You currently have **0 items** in your menu database. You can add items via the Menu tab or use **Import Menu via RASTRORATO AI** to scan a paper menu card!` });
+        return res.json({ reply: `You currently have **0 items** in your menu database. You can add items via the Menu tab or use **Import Menu via SERVIQ AI** to scan a paper menu card!` });
       }
       const topItems = menuItems.slice(0, 10).map(m => `• **${m.name}** — ₹${m.price} (${m.category})`).join('\n');
       const reply = `📋 **Menu Summary for ${businessName}** (${menuItems.length} total items):
@@ -349,7 +349,7 @@ ${lowItemsText}
       return res.json({ reply });
     }
 
-    const reply = `🤖 **RASTRORATO AI Copilot for ${businessName}**:
+    const reply = `🤖 **SERVIQ AI Copilot for ${businessName}**:
 I have full visibility over your ${menuItems.length} menu items, ${orders.length} orders (₹${totalRev.toFixed(0)} total volume), and ${inventory.length} inventory lines.
 
 Try asking:
@@ -376,10 +376,10 @@ router.post('/public-copilot', async (req, res) => {
 
   const normalizedQuery = query.toLowerCase().trim();
 
-  const publicConciergePrompt = `You are the official RASTRORATO AI Product Concierge for prospective restaurant and cafe owners exploring the RASTRORATO website (The Operating System for High-Growth Restaurants).
+  const publicConciergePrompt = `You are the official SERVIQ AI Product Concierge for prospective restaurant and cafe owners exploring the SERVIQ website (The Operating System for High-Growth Restaurants).
 
 Platform Overview:
-- RASTRORATO is an all-in-one cloud restaurant OS unifying:
+- SERVIQ is an all-in-one cloud restaurant OS unifying:
   1. Ultra-Fast Cloud POS: Split bills, modifiers, table status mapping, fast checkout, digital receipts.
   2. Zero-Latency Kitchen KDS: Real-time ticket dispatch, cooking countdowns, color-coded prep delays.
   3. Smart Recipe Inventory & Auto-PO: Recipe-level stock depletion, low-stock threshold alerts, 1-click vendor POs.
@@ -407,29 +407,29 @@ Provide concise, enthusiastic, and helpful answers formatted with clean markdown
     }
 
     // Dynamic Intelligent Fallback for Landing Page Visitors
-    if (['hi', 'hello', 'hey', 'hi there', 'greetings', 'help'].includes(normalizedQuery) || normalizedQuery.includes('what is rastrorato') || normalizedQuery.includes('who are you')) {
-      const reply = `Hello! 👋 I'm the **RASTRORATO AI Concierge**.
+    if (['hi', 'hello', 'hey', 'hi there', 'greetings', 'help'].includes(normalizedQuery) || normalizedQuery.includes('what is serviq') || normalizedQuery.includes('what is rastrorato') || normalizedQuery.includes('who are you')) {
+      const reply = `Hello! 👋 I'm the **SERVIQ AI Concierge**.
 
-**RASTRORATO** is the all-in-one operating system engineered for modern restaurants, cafes, pizzerias, QSRs, and cloud kitchens.
+**SERVIQ** is the all-in-one operating system engineered for modern restaurants, cafes, pizzerias, QSRs, and cloud kitchens.
 
 Here is what we empower you to do:
 - ⚡ **Ultra-Fast POS:** 3-click bill settlements & instant WhatsApp invoices.
 - 🍳 **Live Kitchen KDS:** Zero paper ticket chaos with color-coded prep countdowns.
 - 📦 **Recipe-Level Inventory:** Auto-depleting ingredient stock meters & automated vendor POs.
 - 📱 **0% Commission QR Ordering:** Dynamic digital menus with instant UPI payment.
-- 🤖 **RASTRORATO AI:** 1-click paper menu scanner and predictive sales forecasting.
+- 🤖 **SERVIQ AI:** 1-click paper menu scanner and predictive sales forecasting.
 
 Would you like to know about **pricing plans**, **hardware compatibility**, or **booking a live demo**?`;
       return res.json({ reply });
     }
 
     if (normalizedQuery.includes('price') || normalizedQuery.includes('cost') || normalizedQuery.includes('plan') || normalizedQuery.includes('subscription')) {
-      const reply = `💰 **RASTRORATO Transparent Pricing Plans**:
+      const reply = `💰 **SERVIQ Transparent Pricing Plans**:
 
 1. **Starter Kiosk (₹1,499/mo)**:
    - Unlimited Cloud POS, QR Dine-In, Basic KOT, Daily Revenue Reports. Perfect for coffee kiosks and single stations.
 2. **Growth Pro (₹2,999/mo) — ⭐ Most Popular**:
-   - Full Kitchen KDS, Smart Recipe Inventory & POs, CRM & Loyalty, RASTRORATO AI Copilot, 24/7 Priority Support.
+   - Full Kitchen KDS, Smart Recipe Inventory & POs, CRM & Loyalty, SERVIQ AI Copilot, 24/7 Priority Support.
 3. **Franchise Enterprise (₹5,999/mo)**:
    - Multi-Tenant Super Admin, Central Commissary Sync, Custom White-Label QR, Dedicated Account Strategist.
 
@@ -440,7 +440,7 @@ Would you like to know about **pricing plans**, **hardware compatibility**, or *
     if (normalizedQuery.includes('hardware') || normalizedQuery.includes('printer') || normalizedQuery.includes('ipad') || normalizedQuery.includes('tablet') || normalizedQuery.includes('device')) {
       const reply = `💻 **Zero Proprietary Hardware Lock-In**:
 
-RASTRORATO is 100% cloud-native and runs on the devices you already own:
+SERVIQ is 100% cloud-native and runs on the devices you already own:
 - 📱 **iPads & Android Tablets:** Waitstaff & cashier mobile billing terminals.
 - 💻 **Mac & Windows Laptops/PCs:** Admin & manager reporting consoles.
 - 🖨️ **Thermal Receipt & KOT Printers:** USB, Bluetooth, Wi-Fi & LAN printers (Epson, TVS, Star, Citizen).
@@ -454,8 +454,7 @@ RASTRORATO is 100% cloud-native and runs on the devices you already own:
 
 - Orders placed via POS or QR tables appear instantly on kitchen screens via WebSockets.
 - Color-coded timers: Green (Just In), Yellow (Prepping), Red (Urgent / Delayed).
-- Station-based routing (e.g. Barista Station vs Pizza Oven Station vs Dessert Counter).
-- One-tap status updates notify waiters and guests when food is ready for pickup!`;
+- Instant status updates notify waiters and guests when food is ready for pickup!`;
       return res.json({ reply });
     }
 
@@ -463,7 +462,7 @@ RASTRORATO is 100% cloud-native and runs on the devices you already own:
       const reply = `📷 **Instant AI Paper Menu Digitizer**:
 
 - Simply take a photo or upload a PDF of your existing physical menu card.
-- RASTRORATO AI extracts dish names, prices, categories, and descriptions in <10 seconds.
+- SERVIQ AI extracts dish names, prices, categories, and descriptions in <10 seconds.
 - Automatically pairs high-res photos and drafts items for your 1-click review and publish!`;
       return res.json({ reply });
     }
@@ -476,13 +475,13 @@ RASTRORATO is 100% cloud-native and runs on the devices you already own:
       return res.json({ reply });
     }
 
-    const reply = `💡 **RASTRORATO AI Concierge**:
+    const reply = `💡 **SERVIQ AI Concierge**:
 I can answer any questions about POS fast billing, kitchen KOT displays, recipe inventory, hardware compatibility, pricing, and onboarding setup!
 
 Try asking:
-- "What features are included in RASTRORATO?"
+- "What features are included in SERVIQ?"
 - "Which pricing plan is best for my cafe?"
-- "Does RASTRORATO work with my existing thermal printers?"
+- "Does SERVIQ work with my existing thermal printers?"
 - "How does the AI menu scanner work?"`;
 
     return res.json({ reply });

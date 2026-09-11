@@ -11,8 +11,14 @@ const menuItemSchema = new mongoose.Schema({
   description: { type: String, trim: true },
   price: { type: Number, required: true, min: 0 },
   category: { type: String, default: 'general', index: true },
-  image: { type: String, required: true }, // Cloudinary URL
+  image: { type: String, required: true }, // Cloudinary URL or safe fallback
+  isVeg: { type: Boolean, default: true },
   isAvailable: { type: Boolean, default: true },
+  discount: {
+    isDiscounted: { type: Boolean, default: false },
+    type: { type: String, enum: ['percentage', 'amount'], default: 'percentage' },
+    value: { type: Number, default: 0, min: 0 }
+  },
   preparationTime: { type: Number, default: 15 }, // Minutes
   taxRate: { type: Number, default: 0 }, // Specific item tax override
   variants: [
