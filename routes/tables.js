@@ -5,15 +5,22 @@ const Table = require('../models/Table');
 const auth = require('../middleware/auth');
 const checkRole = require('../middleware/checkRole');
 
-// GET /api/tables - Fetch all tables for the logged-in tenant
-router.get('/', auth, async (req, res) => {
+const jwt = require('jsonwebtoken');
+
+// GET /api/tables - Fetch all tables for the tenant (supports token or tenantId query)
+router.get('/', async (req, res) => {
   try {
-    const tenantId = req.user.tenantId || req.tenantId || req.query.tenantId;
-    if (!tenantId) {
-      return res.status(400).json({ error: 'Tenant context required' });
+    let tenantId = req.query.tenantId;
+
+    if (!tenantId && req.headers['x-auth-token']) {
+      try {
+        const decoded = jwt.verify(req.headers['x-auth-token'], process.env.JWT_SECRET || 'secret');
+        tenantId = decoded.user?.tenantId || decoded.tenantId;
+      } catch (e) {}
     }
 
-    const tables = await Table.find({ tenantId }).sort({ tableNumber: 1 });
+    const filter = tenantId ? { tenantId } : {};
+    const tables = await Table.find(filter).sort({ tableNumber: 1 });
     res.json(tables);
   } catch (err) {
     console.error('Fetch tables error:', err);

@@ -26,6 +26,36 @@ router.get('/public/:id', async (req, res) => {
     }
 });
 
+// Update Tenant Identity & General Settings (Admin/Owner)
+router.put('/:id', auth, async (req, res) => {
+    try {
+        const tenantId = req.params.id || req.user.tenantId;
+        const { name, restaurantName, address, storeAddress, phone, primaryPhone, email, publicEmail, gstNumber, operatingHours, logo, accentColor, enableGst, enableGratuity } = req.body;
+
+        const tenant = await Tenant.findById(tenantId);
+        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+
+        if (name || restaurantName) tenant.name = name || restaurantName;
+        if (address || storeAddress) tenant.address = address || storeAddress;
+        if (phone || primaryPhone) tenant.phone = phone || primaryPhone;
+        if (email || publicEmail) tenant.email = email || publicEmail;
+        if (gstNumber) tenant.gstNumber = gstNumber;
+        if (logo) tenant.logo = logo;
+        
+        if (!tenant.settings) tenant.settings = {};
+        if (operatingHours) tenant.settings.operatingHours = operatingHours;
+        if (accentColor) tenant.settings.theme = accentColor;
+        if (enableGst !== undefined) tenant.settings.enableGst = enableGst;
+        if (enableGratuity !== undefined) tenant.settings.enableGratuity = enableGratuity;
+
+        await tenant.save();
+        res.json(tenant);
+    } catch (err) {
+        console.error("Update tenant error:", err);
+        res.status(500).json({ error: "Failed to update tenant" });
+    }
+});
+
 // Update Tenant Subscription/Plan (Super Admin)
 router.put('/:id/subscription', [auth, checkRole(['super_admin'])], async (req, res) => {
     try {
