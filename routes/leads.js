@@ -4,13 +4,12 @@ const Lead = require('../models/Lead');
 const auth = require('../middleware/auth');
 const checkRole = require('../middleware/checkRole');
 
-// @route   POST /api/leads
-// @desc    Submit a demo request / restaurant lead
-// @access  Public
-router.post('/', async (req, res) => {
+// Handler for creating a lead
+const createLeadHandler = async (req, res) => {
   try {
     const {
       fullName,
+      contactName,
       name,
       workEmail,
       email,
@@ -19,7 +18,9 @@ router.post('/', async (req, res) => {
       outletName,
       outletType,
       locationsCount,
+      outletCount,
       city,
+      address,
       interests,
       preferredTime,
       notes,
@@ -28,16 +29,16 @@ router.post('/', async (req, res) => {
     } = req.body;
 
     const leadData = {
-      fullName: fullName || name || 'Prospective Partner',
-      workEmail: workEmail || email || 'lead@example.com',
+      fullName: fullName || contactName || name || 'Prospective Partner',
+      workEmail: workEmail || email || (phone ? `${phone}@lead.restaurant` : 'lead@example.com'),
       phone: phone || 'N/A',
-      restaurantName: restaurantName || outletName || 'Restaurant Outlet',
+      restaurantName: restaurantName || outletName || name || 'Restaurant Outlet',
       outletType: outletType || 'Cafe / Coffee Shop',
-      locationsCount: locationsCount || '1 outlet',
+      locationsCount: locationsCount || outletCount || '1 outlet',
       city: city || 'Bangalore',
       interests: Array.isArray(interests) ? interests : (interests ? [interests] : ['qr-ordering', 'kds']),
       preferredTime: preferredTime || 'Anytime',
-      notes: notes || message || '',
+      notes: notes || message || address || '',
       source: source || 'website_landing'
     };
 
@@ -47,13 +48,20 @@ router.post('/', async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Demo request received successfully! Our hospitality specialist will contact you within 15 minutes.',
-      leadId: lead._id
+      leadId: lead._id,
+      lead
     });
   } catch (err) {
     console.error('Lead submission error:', err);
     res.status(500).json({ success: false, error: 'Failed to process demo request' });
   }
-});
+};
+
+// @route   POST /api/leads & POST /api/leads/demo-request
+// @desc    Submit a demo request / restaurant lead
+// @access  Public
+router.post('/', createLeadHandler);
+router.post('/demo-request', createLeadHandler);
 
 // @route   GET /api/leads
 // @desc    Get all demo leads (Super Admin Only)
@@ -87,6 +95,22 @@ router.patch('/:id', [auth, checkRole(['super_admin'])], async (req, res) => {
   } catch (err) {
     console.error('Update lead error:', err);
     res.status(500).json({ success: false, error: 'Failed to update lead' });
+  }
+});
+
+// @route   DELETE /api/leads/:id
+// @desc    Delete lead (Super Admin Only)
+// @access  Protected
+router.delete('/:id', [auth, checkRole(['super_admin'])], async (req, res) => {
+  try {
+    const lead = await Lead.findByIdAndDelete(req.params.id);
+    if (!lead) {
+      return res.status(404).json({ success: false, error: 'Lead not found' });
+    }
+    res.json({ success: true, message: 'Lead deleted successfully' });
+  } catch (err) {
+    console.error('Delete lead error:', err);
+    res.status(500).json({ success: false, error: 'Failed to delete lead' });
   }
 });
 
