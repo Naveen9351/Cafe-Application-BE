@@ -4,6 +4,9 @@ const Tenant = require('../models/Tenant');
 const auth = require('../middleware/auth');
 const checkRole = require('../middleware/checkRole');
 
+const bcrypt = require('bcryptjs');
+const User = require('../models/User');
+
 // Get all tenants (Super Admin only)
 router.get('/', [auth, checkRole(['super_admin'])], async (req, res) => {
     try {
@@ -14,10 +17,94 @@ router.get('/', [auth, checkRole(['super_admin'])], async (req, res) => {
     }
 });
 
+// Onboard New Cafe (Super Admin only)
+router.post('/onboard', [auth, checkRole(['super_admin'])], async (req, res) => {
+    try {
+        const { businessName, adminName, email, password, phone, address, logo, profileImage, plan, customPrice } = req.body;
+
+        if (!businessName || !email || !password) {
+            return res.status(400).json({ error: 'Business name, email, and password are required' });
+        }
+
+        const existingUser = await User.findOne({ email: email.toLowerCase() });
+        if (existingUser) {
+            return res.status(400).json({ error: 'User with this email already exists' });
+        }
+
+        const plans = {
+            '1_month': { name: '1 Month Starter', price: 999, duration: 30 },
+            '6_months': { name: '6 Months Saver', price: 4999, duration: 180 },
+            '1_year': { name: '1 Year Ultimate Pro', price: 10999, duration: 365 },
+            'free_trial': { name: 'Free Trial', price: 0, duration: 14 }
+        };
+
+        const planConfig = plans[plan] || plans['1_month'];
+        const price = customPrice !== undefined ? Number(customPrice) : planConfig.price;
+
+        const startDate = new Date();
+        const endDate = new Date();
+        endDate.setDate(endDate.getDate() + planConfig.duration);
+
+        // Create Tenant
+        const tenant = new Tenant({
+            name: businessName,
+            email: email.toLowerCase(),
+            phone: phone || '',
+            address: address || '',
+            subscription: {
+                plan: plan || '1_month',
+                price: price,
+                startDate: startDate,
+                endDate: endDate,
+                isActive: true,
+                orderLimit: 999999
+            },
+            subscriptionHistory: [
+                {
+                    plan: planConfig.name,
+                    price: price,
+                    startDate: startDate,
+                    endDate: endDate,
+                    status: 'active',
+                    actionDate: new Date(),
+                    notes: 'Initial Onboarding Plan'
+                }
+            ],
+            settings: {
+                logo: logo || 'https://images.unsplash.com/photo-1554118811-1e0d58224f24?auto=format&fit=crop&q=80&w=400'
+            }
+        });
+        await tenant.save();
+
+        // Create Admin User for Tenant
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        const user = new User({
+            tenantId: tenant._id,
+            name: adminName || businessName,
+            email: email.toLowerCase(),
+            password: hashedPassword,
+            role: 'admin',
+            status: 'active',
+            profileImage: profileImage || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=300'
+        });
+        await user.save();
+
+        tenant.ownerId = user._id;
+        await tenant.save();
+
+        res.status(201).json({ message: 'Cafe onboarded successfully', tenant, user });
+    } catch (err) {
+        console.error("Onboard error:", err);
+        res.status(500).json({ error: 'Failed to onboard cafe: ' + err.message });
+    }
+});
+
 // Get Public Tenant Info (For Branding: Name, Logo, Address)
 router.get('/public/:id', async (req, res) => {
     try {
-        const tenant = await Tenant.findById(req.params.id).select('name address phone email settings');
+        const tenant = await Tenant.findById(req.params.id).select('name address phone email settings subscription subscriptionHistory');
         if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
         res.json(tenant);
     } catch (err) {
@@ -56,60 +143,108 @@ router.put('/:id', auth, async (req, res) => {
     }
 });
 
-// Update Tenant Subscription/Plan (Super Admin)
+// Update / Activate Tenant Subscription Plan (Super Admin)
 router.put('/:id/subscription', [auth, checkRole(['super_admin'])], async (req, res) => {
     try {
-        const { plan } = req.body; // Plan name: 'free_trial', 'basic', 'enterprise'
+        const { plan, customPrice, customEndDate } = req.body; 
 
         const tenant = await Tenant.findById(req.params.id);
         if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
-        // Define Plan Limits
         const plans = {
-            'free_trial': {
-                price: 0,
-                limit: 50,
-                duration: 30, // Days
-                features: { emailSupport: false, prioritySupport: false, customBranding: false, orderTimer: false, advancedAnalytics: false }
-            },
-            'basic': { // ₹100 Plan
-                price: 100,
-                limit: 200,
-                duration: 30,
-                features: { emailSupport: true, prioritySupport: true, customBranding: false, orderTimer: false, advancedAnalytics: true }
-            },
-            'enterprise': { // ₹500 Plan
-                price: 500,
-                limit: 999999, // Unlimited
-                duration: 30,
-                features: { emailSupport: true, prioritySupport: true, customBranding: true, orderTimer: true, advancedAnalytics: true }
+            '1_month': { name: '1 Month Starter', price: 999, duration: 30 },
+            '6_months': { name: '6 Months Saver', price: 4999, duration: 180 },
+            '1_year': { name: '1 Year Ultimate Pro', price: 10999, duration: 365 },
+            'free_trial': { name: 'Free Trial', price: 0, duration: 14 }
+        };
+
+        const planConfig = plans[plan] || { name: plan || 'Custom Plan', price: customPrice || 999, duration: 30 };
+        const price = customPrice !== undefined ? Number(customPrice) : planConfig.price;
+
+        const startDate = new Date();
+        let endDate;
+        if (customEndDate) {
+            endDate = new Date(customEndDate);
+        } else {
+            endDate = new Date();
+            endDate.setDate(endDate.getDate() + planConfig.duration);
+        }
+
+        tenant.subscription = {
+            plan: plan || '1_month',
+            price: price,
+            startDate: startDate,
+            endDate: endDate,
+            isActive: true,
+            orderLimit: 999999,
+            orderCount: tenant.subscription?.orderCount || 0,
+            features: {
+                emailSupport: true,
+                prioritySupport: true,
+                customBranding: true,
+                orderTimer: true,
+                advancedAnalytics: true
             }
         };
 
-        const selectedPlan = plans[plan];
-        if (!selectedPlan) return res.status(400).json({ error: "Invalid plan selected" });
-
-        // Update Subscription
-        tenant.subscription.plan = plan;
-        tenant.subscription.price = selectedPlan.price;
-        tenant.subscription.orderLimit = selectedPlan.limit;
-        tenant.subscription.features = selectedPlan.features;
-        tenant.subscription.isActive = true;
-        tenant.subscription.startDate = new Date(); // Reset start date
-
-        // Set End Date (+30 days)
-        const endDate = new Date();
-        endDate.setDate(endDate.getDate() + selectedPlan.duration);
-        tenant.subscription.endDate = endDate;
-
-        // Reset usage count on plan change? 
-        // tenant.subscription.orderCount = 0; // Optional: Reset usage if new plan starts
+        if (!tenant.subscriptionHistory) tenant.subscriptionHistory = [];
+        tenant.subscriptionHistory.push({
+            plan: planConfig.name || plan,
+            price: price,
+            startDate: startDate,
+            endDate: endDate,
+            status: 'active',
+            actionDate: new Date(),
+            notes: 'Activated by Admin'
+        });
 
         await tenant.save();
         res.json(tenant);
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: "Update failed" });
+        console.error("Subscription update error:", err);
+        res.status(500).json({ error: "Subscription update failed" });
+    }
+});
+
+// Deactivate Tenant Subscription (Super Admin)
+router.put('/:id/deactivate-subscription', [auth, checkRole(['super_admin'])], async (req, res) => {
+    try {
+        const tenant = await Tenant.findById(req.params.id);
+        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+
+        tenant.subscription.isActive = false;
+
+        if (!tenant.subscriptionHistory) tenant.subscriptionHistory = [];
+        tenant.subscriptionHistory.push({
+            plan: tenant.subscription.plan,
+            price: tenant.subscription.price,
+            startDate: tenant.subscription.startDate,
+            endDate: tenant.subscription.endDate,
+            status: 'deactivated',
+            actionDate: new Date(),
+            notes: 'Deactivated in-between by Admin'
+        });
+
+        await tenant.save();
+        res.json(tenant);
+    } catch (err) {
+        console.error("Deactivation error:", err);
+        res.status(500).json({ error: "Deactivation failed" });
+    }
+});
+
+// Get Subscription History (Super Admin or Cafe Admin)
+router.get('/:id/subscription-history', auth, async (req, res) => {
+    try {
+        const tenant = await Tenant.findById(req.params.id).select('name subscription subscriptionHistory');
+        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+        res.json({
+            currentSubscription: tenant.subscription,
+            history: tenant.subscriptionHistory || []
+        });
+    } catch (err) {
+        console.error("Fetch history error:", err);
+        res.status(500).json({ error: "Failed to fetch history" });
     }
 });
 

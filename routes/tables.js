@@ -20,7 +20,22 @@ router.get('/', async (req, res) => {
     }
 
     const filter = tenantId ? { tenantId } : {};
-    const tables = await Table.find(filter).sort({ tableNumber: 1 });
+    let tables = await Table.find(filter).sort({ tableNumber: 1 });
+
+    if (tenantId && tables.length === 0) {
+      const initialTables = [
+        { tenantId, tableNumber: '1', seatingCapacity: 4, status: 'available' },
+        { tenantId, tableNumber: '2', seatingCapacity: 4, status: 'available' },
+        { tenantId, tableNumber: '3', seatingCapacity: 4, status: 'available' },
+        { tenantId, tableNumber: '4', seatingCapacity: 4, status: 'available' }
+      ];
+      try {
+        tables = await Table.insertMany(initialTables);
+      } catch (seedErr) {
+        console.log('Seed tables fallback warning:', seedErr.message);
+      }
+    }
+
     res.json(tables);
   } catch (err) {
     console.error('Fetch tables error:', err);

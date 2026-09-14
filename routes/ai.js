@@ -274,7 +274,7 @@ router.post('/copilot', auth, async (req, res) => {
     const tenantContextPrompt = `You are SERVIQ AI Copilot, the intelligent executive restaurant analyst for ${businessName}.
 You have direct real-time access to ${businessName}'s operational database:
 - Active Menu: ${menuItems.length} items registered in total [${menuSummary || 'No items added yet'}]
-- Sales & Volume: ${orders.length} total orders processed, Total Lifetime Revenue: ₹${totalRev.toFixed(2)}, Average Order Value: ₹${avgOrderValue.toFixed(2)}
+- Sales & Volume: ${orders.length} total orders processed, Total Lifetime Revenue: ₹${Math.round(totalRev)}, Average Order Value: ₹${Math.round(avgOrderValue)}
 - Current Inventory: ${inventory.length} raw ingredients tracked [${inventorySummary || 'No inventory logged yet'}], Low Stock Alerts: ${lowStockItems.length} items
 
 Instructions:
@@ -321,15 +321,15 @@ What would you like to explore today?
 
 ${topItems}${menuItems.length > 10 ? `\n\n*(+ ${menuItems.length - 10} more items in your catalog)*` : ''}
 
-💡 **AI Pricing Recommendation:** Your average item price is ₹${(menuItems.reduce((s, i) => s + (i.price || 0), 0) / menuItems.length).toFixed(0)}. Consider pairing high-margin beverages with snacks as dynamic combos to lift ticket sizes.`;
+💡 **AI Pricing Recommendation:** Your average item price is ₹${Math.round(menuItems.reduce((s, i) => s + (i.price || 0), 0) / (menuItems.length || 1))}. Consider pairing high-margin beverages with snacks as dynamic combos to lift ticket sizes.`;
       return res.json({ reply });
     }
 
     if (normalizedQuery.includes('sales') || normalizedQuery.includes('revenue') || normalizedQuery.includes('earn') || normalizedQuery.includes('performance')) {
       const reply = `📊 **Sales & Revenue Report for ${businessName}**:
-- **Lifetime Gross Revenue:** ₹${totalRev.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+- **Lifetime Gross Revenue:** ₹${Math.round(totalRev).toLocaleString('en-IN')}
 - **Total Orders Logged:** ${orders.length} orders
-- **Average Ticket Size:** ₹${avgOrderValue.toFixed(2)}
+- **Average Ticket Size:** ₹${Math.round(avgOrderValue).toLocaleString('en-IN')}
 - 📈 **Traffic Trend:** Highest customer volume typically occurs during lunch (1 PM - 3 PM) and evening dinner (6:30 PM - 9 PM).
 - 💡 **Growth Action:** Launching a digital QR loyalty reward for returning guests can boost weekly repeat frequency by 18%.`;
       return res.json({ reply });
@@ -350,7 +350,7 @@ ${lowItemsText}
     }
 
     const reply = `🤖 **SERVIQ AI Copilot for ${businessName}**:
-I have full visibility over your ${menuItems.length} menu items, ${orders.length} orders (₹${totalRev.toFixed(0)} total volume), and ${inventory.length} inventory lines.
+I have full visibility over your ${menuItems.length} menu items, ${orders.length} orders (₹${Math.round(totalRev)} total volume), and ${inventory.length} inventory lines.
 
 Try asking:
 - "List my top menu items and prices"

@@ -11,23 +11,33 @@ const tenantSchema = new mongoose.Schema({
   subscription: {
     plan: {
       type: String,
-      enum: ['free_trial', 'basic', 'pro', 'enterprise'], // basic = 100rs, pro = 500rs? User said: 1. Free, 2. 100rs (Pro?), 3. 500rs (Enterprise)
-      default: 'free_trial'
+      default: '1_month'
     },
-    price: { type: Number, default: 0 },
+    price: { type: Number, default: 999 },
     startDate: { type: Date, default: Date.now },
     endDate: { type: Date },
     isActive: { type: Boolean, default: true },
-    orderLimit: { type: Number, default: 50 }, // Default for free trial
-    orderCount: { type: Number, default: 0 }, // Track usages this month
+    orderLimit: { type: Number, default: 999999 },
+    orderCount: { type: Number, default: 0 },
     features: {
-      emailSupport: { type: Boolean, default: false },
-      prioritySupport: { type: Boolean, default: false },
-      customBranding: { type: Boolean, default: false },
-      orderTimer: { type: Boolean, default: false },
-      advancedAnalytics: { type: Boolean, default: false }
+      emailSupport: { type: Boolean, default: true },
+      prioritySupport: { type: Boolean, default: true },
+      customBranding: { type: Boolean, default: true },
+      orderTimer: { type: Boolean, default: true },
+      advancedAnalytics: { type: Boolean, default: true }
     }
   },
+  subscriptionHistory: [
+    {
+      plan: { type: String },
+      price: { type: Number },
+      startDate: { type: Date },
+      endDate: { type: Date },
+      status: { type: String, enum: ['active', 'deactivated', 'expired'] },
+      actionDate: { type: Date, default: Date.now },
+      notes: { type: String }
+    }
+  ],
   settings: {
     currency: { type: String, default: 'INR' },
     theme: { type: String, default: 'default' },

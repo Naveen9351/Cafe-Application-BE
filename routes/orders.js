@@ -327,7 +327,7 @@ router.get('/analytics', auth, checkRole(['admin', 'super_admin']), async (req, 
 // UPDATE Order Status (Admin/Staff with strict Tenant Scoping)
 router.put('/:id/status', auth, async (req, res) => {
   try {
-    const { status } = req.body;
+    const { status, paymentStatus, paymentMethod, estimatedTime } = req.body;
 
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ error: 'Invalid Order ID' });
@@ -343,22 +343,204 @@ router.put('/:id/status', auth, async (req, res) => {
       filter.tenantId = req.user.tenantId;
     }
 
+    const updateFields = {};
+    if (status) updateFields.status = status;
+    if (paymentStatus) updateFields.paymentStatus = paymentStatus;
+    if (paymentMethod) updateFields.paymentMethod = paymentMethod;
+    if (estimatedTime !== undefined && estimatedTime !== null) {
+      updateFields.estimatedTime = Number(estimatedTime) || 20;
+    }
+
     const order = await Order.findOneAndUpdate(
       filter,
-      { status },
+      updateFields,
       { new: true }
     );
 
     if (!order) return res.status(404).json({ error: 'Order not found or unauthorized' });
 
     // Emit update to tenant room
-    if (global.io) {
+    if (global.io && order.tenantId) {
       global.io.to(order.tenantId.toString()).emit('orderUpdate', order);
     }
 
     res.json(order);
 
   } catch (err) {
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
+// SETTLE ALL ACTIVE ORDERS FOR A TABLE (Table Batch Settle & Free Table)
+router.put('/table/:tableNumber/settle', auth, async (req, res) => {
+  try {
+    const rawTable = String(req.params.tableNumber).trim();
+    const numOnly = rawTable.replace(/[^0-9]/g, '') || rawTable;
+    const { paymentMethod, paymentStatus } = req.body;
+
+    let tenantId = req.user.tenantId;
+    if (req.user.role === 'super_admin' && req.body.tenantId) {
+      tenantId = req.body.tenantId;
+    }
+
+    const tablePattern = new RegExp(`^(${rawTable}|Table ${numOnly}|table-${numOnly}|${numOnly})$`, 'i');
+    const query = {
+      status: { $nin: ['completed', 'cancelled'] },
+      tableNumber: { $regex: tablePattern }
+    };
+    if (tenantId) query.tenantId = tenantId;
+
+    const activeOrders = await Order.find(query);
+    if (!activeOrders || activeOrders.length === 0) {
+      return res.status(200).json({ message: 'No active orders found for Table ' + rawTable, count: 0, settledOrders: [] });
+    }
+
+    const settledOrders = [];
+    for (const ord of activeOrders) {
+      ord.status = 'completed';
+      ord.paymentStatus = paymentStatus || 'paid';
+      if (paymentMethod) ord.paymentMethod = paymentMethod;
+      await ord.save();
+      settledOrders.push(ord);
+
+      if (global.io && ord.tenantId) {
+        global.io.to(ord.tenantId.toString()).emit('orderUpdate', ord);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Successfully settled ${settledOrders.length} order(s) for Table ${rawTable}`,
+      count: settledOrders.length,
+      settledOrders
+    });
+  } catch (err) {
+    console.error('Table batch settle error:', err);
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
+// UPDATE/ADD Items to Existing Order (Staff / POS Running Table Tab)
+router.put('/:id/items', auth, async (req, res) => {
+  try {
+    const { items } = req.body;
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid Order ID' });
+    }
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Items array is required' });
+    }
+
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    // Fetch MenuItem details
+    const itemIds = items.map(i => i.id).filter(id => mongoose.Types.ObjectId.isValid(id));
+    const dbItems = await MenuItem.find({ _id: { $in: itemIds }, tenantId: order.tenantId });
+
+    let subTotal = 0;
+    const orderItems = [];
+
+    for (const clientItem of items) {
+      const dbItem = dbItems.find(i => i._id.toString() === clientItem.id);
+      if (dbItem) {
+        const quantity = clientItem.quantity || 1;
+        let basePrice = dbItem.price;
+
+        if (dbItem.discount && dbItem.discount.isDiscounted) {
+          if (dbItem.discount.type === 'percentage') {
+            basePrice = Math.max(0, Math.round(basePrice * (1 - dbItem.discount.value / 100)));
+          } else if (dbItem.discount.type === 'amount') {
+            basePrice = Math.max(0, basePrice - dbItem.discount.value);
+          }
+        }
+
+        let selectedVariant = null;
+        if (clientItem.variant && clientItem.variant.name) {
+          selectedVariant = clientItem.variant;
+          basePrice = clientItem.variant.price;
+        }
+
+        const selectedAddons = clientItem.addons || [];
+        let addonsTotal = 0;
+        selectedAddons.forEach(ad => {
+          addonsTotal += ad.price || 0;
+        });
+
+        const itemTotal = (basePrice + addonsTotal) * quantity;
+        subTotal += itemTotal;
+
+        orderItems.push({
+          item: dbItem._id,
+          name: dbItem.name,
+          quantity: quantity,
+          price: basePrice + addonsTotal,
+          variant: selectedVariant,
+          addons: selectedAddons
+        });
+      } else {
+        // Retain any existing items that were already in order
+        const existingItem = (order.items || []).find(it => (it.item?.toString() === clientItem.id || it._id?.toString() === clientItem.id));
+        if (existingItem) {
+          const quantity = clientItem.quantity || existingItem.quantity || 1;
+          const itemPrice = clientItem.price || existingItem.price || 0;
+          subTotal += itemPrice * quantity;
+          orderItems.push({
+            item: existingItem.item,
+            name: clientItem.name || existingItem.name,
+            quantity: quantity,
+            price: itemPrice,
+            variant: clientItem.variant || existingItem.variant,
+            addons: clientItem.addons || existingItem.addons
+          });
+        }
+      }
+    }
+
+    const taxRate = 0.05; // 5% GST
+    const taxAmount = Math.round(subTotal * taxRate * 100) / 100;
+    const total = Math.round((subTotal + taxAmount) * 100) / 100;
+
+    order.items = orderItems;
+    order.subTotal = subTotal;
+    order.taxAmount = taxAmount;
+    order.total = total;
+
+    await order.save();
+
+    if (global.io && order.tenantId) {
+      global.io.to(order.tenantId.toString()).emit('orderUpdate', order);
+    }
+
+    res.json(order);
+  } catch (err) {
+    console.error('Update order items error:', err);
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
+// DELETE Order (Admin/Staff)
+router.delete('/:id', auth, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid Order ID' });
+    }
+
+    const filter = { _id: req.params.id };
+    if (req.user.role !== 'super_admin' && req.user.tenantId) {
+      filter.tenantId = req.user.tenantId;
+    }
+
+    const order = await Order.findOneAndDelete(filter);
+    if (!order) return res.status(404).json({ error: 'Order not found or unauthorized' });
+
+    if (global.io && order.tenantId) {
+      global.io.to(order.tenantId.toString()).emit('orderDeleted', { id: req.params.id });
+    }
+
+    res.json({ message: 'Order deleted successfully' });
+  } catch (err) {
+    console.error("Delete order error:", err);
     res.status(500).json({ error: 'Server error' });
   }
 });

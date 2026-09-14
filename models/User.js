@@ -21,6 +21,7 @@ const userSchema = new mongoose.Schema({
     default: 'active'
   },
   permissions: [{ type: String }], // Optional granular permissions
+  profileImage: { type: String }, // Admin profile picture
   lastLogin: { type: Date },
   createdAt: { type: Date, default: Date.now }
 });
