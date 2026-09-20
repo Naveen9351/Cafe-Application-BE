@@ -7,6 +7,7 @@ const tenantSchema = new mongoose.Schema({
   address: { type: String, trim: true },
   ownerId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   gstNumber: { type: String, trim: true },
+  logo: { type: String, trim: true },
   domain: { type: String, unique: true, sparse: true, trim: true }, // For custom domains
   subscription: {
     plan: {

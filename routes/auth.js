@@ -68,7 +68,7 @@ router.post(
                 tenantId: user.tenantId?._id || null
             };
 
-            const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '12h' });
+            const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '30d' });
 
             // Update Last Login
             user.lastLogin = new Date();
@@ -79,6 +79,8 @@ router.post(
                 console.warn("Could not save last login timestamp:", saveErr.message);
             }
 
+            const rLogo = user.tenantId?.logo || user.tenantId?.settings?.logo || null;
+
             res.json({
                 token,
                 user: {
@@ -87,7 +89,10 @@ router.post(
                     email: user.email,
                     role: user.role,
                     tenantId: user.tenantId?._id || null,
-                    tenantName: user.tenantId?.name || 'Platform Admin'
+                    tenantName: user.tenantId?.name || 'Platform Admin',
+                    restaurantName: user.tenantId?.name || user.name,
+                    restaurantLogo: rLogo,
+                    logo: rLogo
                 }
             });
         } catch (err) {
@@ -111,6 +116,8 @@ router.get('/verify-session', async (req, res) => {
             return res.status(401).json({ error: 'Session invalid or account deactivated', valid: false });
         }
 
+        const rLogo = user.tenantId?.logo || user.tenantId?.settings?.logo || null;
+
         res.json({
             valid: true,
             user: {
@@ -119,7 +126,10 @@ router.get('/verify-session', async (req, res) => {
                 email: user.email,
                 role: user.role,
                 tenantId: user.tenantId?._id || null,
-                tenantName: user.tenantId?.name || 'Platform Admin'
+                tenantName: user.tenantId?.name || 'Platform Admin',
+                restaurantName: user.tenantId?.name || user.name,
+                restaurantLogo: rLogo,
+                logo: rLogo
             }
         });
     } catch (err) {

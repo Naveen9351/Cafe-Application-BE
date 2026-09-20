@@ -104,7 +104,7 @@ router.post('/onboard', [auth, checkRole(['super_admin'])], async (req, res) => 
 // Get Public Tenant Info (For Branding: Name, Logo, Address)
 router.get('/public/:id', async (req, res) => {
     try {
-        const tenant = await Tenant.findById(req.params.id).select('name address phone email settings subscription subscriptionHistory');
+        const tenant = await Tenant.findById(req.params.id).select('name logo address phone email gstNumber settings subscription subscriptionHistory');
         if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
         res.json(tenant);
     } catch (err) {
@@ -127,7 +127,11 @@ router.put('/:id', auth, async (req, res) => {
         if (phone || primaryPhone) tenant.phone = phone || primaryPhone;
         if (email || publicEmail) tenant.email = email || publicEmail;
         if (gstNumber) tenant.gstNumber = gstNumber;
-        if (logo) tenant.logo = logo;
+        if (logo) {
+            tenant.logo = logo;
+            if (!tenant.settings) tenant.settings = {};
+            tenant.settings.logo = logo;
+        }
         
         if (!tenant.settings) tenant.settings = {};
         if (operatingHours) tenant.settings.operatingHours = operatingHours;
