@@ -185,6 +185,23 @@ router.post(
         imageUrl = `https://image.pollinations.ai/prompt/delicious%20food%20photo%20of%20${encodeURIComponent(name)}%20gourmet%20dish?width=500&height=400&nologo=true`;
       }
 
+      let variantsArr = [];
+      if (req.body.variants) {
+        try {
+          const parsed = typeof req.body.variants === 'string' ? JSON.parse(req.body.variants) : req.body.variants;
+          if (Array.isArray(parsed)) {
+            variantsArr = parsed
+              .filter(v => v && typeof v === 'object' && v.name && String(v.name).trim())
+              .map(v => ({
+                name: String(v.name).trim(),
+                price: Number(v.price) >= 0 ? Number(v.price) : numPrice
+              }));
+          }
+        } catch (e) {
+          console.warn('Variants parse error:', e.message);
+        }
+      }
+
       const newItem = new MenuItem({
         tenantId: req.tenantId || req.user?.tenantId || '6a762ef86c9d5c8be315f10a',
         name: name.trim(),
@@ -194,7 +211,8 @@ router.post(
         image: imageUrl,
         isVeg: isVeg !== undefined ? (isVeg === 'true' || isVeg === true) : true,
         isAvailable: isAvailable !== undefined ? (isAvailable === 'true' || isAvailable === true) : true,
-        discount: discountObj
+        discount: discountObj,
+        variants: variantsArr
       });
 
       await newItem.save();
@@ -253,7 +271,23 @@ router.put('/:id', [auth, checkRole(['admin', 'super_admin'])], upload.single('i
         }
       }
 
-      updateData.discount = discountObj;
+    // Handle Variants / Labels & Pricing
+    if (req.body.variants !== undefined) {
+      let variantsArr = [];
+      try {
+        const parsed = typeof req.body.variants === 'string' ? JSON.parse(req.body.variants) : req.body.variants;
+        if (Array.isArray(parsed)) {
+          variantsArr = parsed
+            .filter(v => v && typeof v === 'object' && v.name && String(v.name).trim())
+            .map(v => ({
+              name: String(v.name).trim(),
+              price: Number(v.price) >= 0 ? Number(v.price) : (updateData.price || 0)
+            }));
+        }
+      } catch (e) {
+        console.warn('Variants parse error in update:', e.message);
+      }
+      updateData.variants = variantsArr;
     }
 
     if (req.file) {
