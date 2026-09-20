@@ -138,6 +138,9 @@ router.put('/:id', auth, async (req, res) => {
         if (accentColor) tenant.settings.theme = accentColor;
         if (enableGst !== undefined) tenant.settings.enableGst = enableGst;
         if (enableGratuity !== undefined) tenant.settings.enableGratuity = enableGratuity;
+        if (req.body.enableEstimatedPrepTime !== undefined) {
+            tenant.settings.enableEstimatedPrepTime = Boolean(req.body.enableEstimatedPrepTime);
+        }
 
         await tenant.save();
         res.json(tenant);

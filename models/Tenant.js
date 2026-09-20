@@ -44,6 +44,7 @@ const tenantSchema = new mongoose.Schema({
     theme: { type: String, default: 'default' },
     taxPercentage: { type: Number, default: 5 }, // GST %
     logo: { type: String }, // URL to logo
+    enableEstimatedPrepTime: { type: Boolean, default: false }, // Kitchen prep time estimation toggle (default OFF)
     categories: {
       type: [{ name: String, id: String, icon: String }],
       default: [
