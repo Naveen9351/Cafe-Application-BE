@@ -23,7 +23,11 @@ function formatStaffOutput(staffDoc) {
 router.get('/', auth, async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
-        const staffList = await User.find({ tenantId, role: { $ne: 'super_admin' } })
+        // Do not return admin or super_admin in staff members list
+        const staffList = await User.find({
+            tenantId,
+            role: { $nin: ['admin', 'super_admin'] }
+        })
             .select('-password')
             .sort({ createdAt: -1 });
 
@@ -163,12 +167,24 @@ router.put('/:id', auth, async (req, res) => {
 router.delete('/:id', auth, async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
-        const staff = await User.findOneAndDelete({ _id: req.params.id, tenantId });
-        if (!staff) return res.status(404).json({ success: false, error: 'Staff member not found' });
+        const currentUserId = req.user.id || req.user._id?.toString();
+
+        if (req.params.id === currentUserId) {
+            return res.status(400).json({ success: false, error: 'You cannot delete your own account' });
+        }
+
+        const targetUser = await User.findOne({ _id: req.params.id, tenantId });
+        if (!targetUser) return res.status(404).json({ success: false, error: 'Staff member not found' });
+
+        if (targetUser.role === 'admin' || targetUser.role === 'super_admin') {
+            return res.status(400).json({ success: false, error: 'Admin accounts cannot be deleted from staff management' });
+        }
+
+        await User.deleteOne({ _id: req.params.id });
 
         res.json({
             success: true,
-            message: `Staff member ${staff.name} removed successfully`
+            message: `Staff member ${targetUser.name || targetUser.fullName} removed successfully`
         });
     } catch (err) {
         console.error('Delete staff error:', err);
