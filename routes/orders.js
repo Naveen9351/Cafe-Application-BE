@@ -87,7 +87,9 @@ router.post(
       }
 
       // 1. Fetch all items (Security: Verify prices server-side)
-      const itemIds = items.map(i => i.id).filter(id => mongoose.Types.ObjectId.isValid(id));
+      const itemIds = items
+        .map(i => i.id || i.itemId || i.item || i._id)
+        .filter(id => id && mongoose.Types.ObjectId.isValid(id));
       const dbItems = await MenuItem.find({
         _id: { $in: itemIds },
         tenantId: tenantId
@@ -102,7 +104,8 @@ router.post(
       const orderItems = [];
 
       for (const clientItem of items) {
-        const dbItem = dbItems.find(i => i._id.toString() === clientItem.id);
+        const cId = String(clientItem.id || clientItem.itemId || clientItem.item || clientItem._id || '');
+        const dbItem = dbItems.find(i => i._id.toString() === cId);
         if (dbItem) {
           const quantity = clientItem.quantity || 1;
           
