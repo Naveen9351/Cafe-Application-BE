@@ -190,7 +190,7 @@ router.post(
         status: status || 'pending',
         paymentStatus: paymentStatus || 'pending',
         loyaltyPointsEarned: pointsEarned,
-        estimatedTime: 20
+        estimatedTime: req.body.estimatedTime ? Number(req.body.estimatedTime) : null
       });
 
       await newOrder.save();
@@ -351,7 +351,7 @@ router.put('/:id/status', auth, async (req, res) => {
     if (paymentStatus) updateFields.paymentStatus = paymentStatus;
     if (paymentMethod) updateFields.paymentMethod = paymentMethod;
     if (estimatedTime !== undefined && estimatedTime !== null) {
-      updateFields.estimatedTime = Number(estimatedTime) || 20;
+      updateFields.estimatedTime = Number(estimatedTime) > 0 ? Number(estimatedTime) : null;
     }
 
     const order = await Order.findOneAndUpdate(
