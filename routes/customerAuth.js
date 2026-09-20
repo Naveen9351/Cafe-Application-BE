@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { sendSmsOtp } = require('../utils/smsService');
 
 // In-memory OTP storage with timestamp (5 min expiry)
 // Key: phone number string, Value: { otp, expiresAt, name }
@@ -34,12 +35,13 @@ router.post('/send-otp', async (req, res) => {
             expiresAt
         });
 
-        console.log(`[CUSTOMER OTP] Sent OTP to +91 ${cleanPhone}: ${generatedOtp}`);
+        // Dispatch SMS via Fast2SMS / Twilio or log to terminal
+        const smsResult = await sendSmsOtp(cleanPhone, generatedOtp);
 
-        // Return success (include devOtp in response for testing)
         return res.json({
             success: true,
             message: `OTP sent successfully to +91 ${cleanPhone.slice(-4).padStart(cleanPhone.length, '*')}`,
+            provider: smsResult.provider,
             devOtp: generatedOtp
         });
     } catch (err) {
