@@ -5,6 +5,17 @@ const User = require('../models/User');
 const auth = require('../middleware/auth');
 
 /**
+ * Helper to normalize staff object for frontend
+ */
+function formatStaffOutput(staffDoc) {
+    const obj = staffDoc.toObject ? staffDoc.toObject() : { ...staffDoc };
+    delete obj.password;
+    obj.fullName = obj.fullName || obj.name;
+    obj.username = obj.username || obj.email;
+    return obj;
+}
+
+/**
  * @route   GET /api/staff
  * @desc    Get all staff members for the current tenant
  * @access  Private (Tenant Admin / Manager)
@@ -12,13 +23,15 @@ const auth = require('../middleware/auth');
 router.get('/', auth, async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
-        const staff = await User.find({ tenantId, role: { $ne: 'super_admin' } })
+        const staffList = await User.find({ tenantId, role: { $ne: 'super_admin' } })
             .select('-password')
             .sort({ createdAt: -1 });
-        res.json(staff);
+
+        const formatted = staffList.map(formatStaffOutput);
+        res.json({ success: true, staff: formatted });
     } catch (err) {
         console.error('Fetch staff error:', err);
-        res.status(500).json({ error: 'Failed to fetch staff members' });
+        res.status(500).json({ success: false, error: 'Failed to fetch staff members' });
     }
 });
 
@@ -30,15 +43,29 @@ router.get('/', auth, async (req, res) => {
 router.post('/', auth, async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
-        const { name, email, password, role, permissions, status } = req.body;
+        const name = (req.body.fullName || req.body.name || '').trim();
+        const email = (req.body.username || req.body.email || '').toLowerCase().trim();
+        const password = req.body.password;
+        const phone = (req.body.phone || '').trim();
+        const role = req.body.role || 'cashier';
+        const permissions = req.body.permissions || {};
+        const status = req.body.status || 'active';
 
         if (!name || !email || !password) {
-            return res.status(400).json({ error: 'Name, email/username, and password/PIN are required' });
+            return res.status(400).json({
+                success: false,
+                error: 'Full name, email/username, and password are required'
+            });
         }
 
-        const existing = await User.findOne({ email: email.toLowerCase() });
+        const existing = await User.findOne({
+            $or: [{ email }, { username: email }]
+        });
         if (existing) {
-            return res.status(400).json({ error: 'A staff member or user with this email/username already exists' });
+            return res.status(400).json({
+                success: false,
+                error: 'A staff member or user with this email/username already exists'
+            });
         }
 
         const salt = await bcrypt.genSalt(10);
@@ -46,23 +73,29 @@ router.post('/', auth, async (req, res) => {
 
         const newStaff = new User({
             tenantId,
-            name: name.trim(),
-            email: email.toLowerCase().trim(),
+            name,
+            fullName: name,
+            email,
+            username: email,
+            phone,
             password: hashedPassword,
-            role: role || 'staff',
-            status: status || 'active',
-            permissions: Array.isArray(permissions) ? permissions : ['access_pos', 'access_live_orders']
+            role,
+            status,
+            permissions
         });
 
         await newStaff.save();
 
-        const staffData = newStaff.toObject();
-        delete staffData.password;
+        const staffData = formatStaffOutput(newStaff);
 
-        res.status(201).json({ success: true, message: `Staff member ${name} created successfully!`, staff: staffData });
+        res.status(201).json({
+            success: true,
+            message: `Staff member ${name} created successfully!`,
+            staff: staffData
+        });
     } catch (err) {
         console.error('Create staff error:', err);
-        res.status(500).json({ error: 'Failed to create staff member: ' + err.message });
+        res.status(500).json({ success: false, error: 'Failed to create staff member: ' + err.message });
     }
 });
 
@@ -74,17 +107,31 @@ router.post('/', auth, async (req, res) => {
 router.put('/:id', auth, async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
-        const { name, email, password, role, permissions, status } = req.body;
+        const name = (req.body.fullName || req.body.name || '').trim();
+        const email = (req.body.username || req.body.email || '').toLowerCase().trim();
+        const phone = req.body.phone;
+        const password = req.body.password;
+        const role = req.body.role;
+        const permissions = req.body.permissions;
+        const status = req.body.status;
 
         const staff = await User.findOne({ _id: req.params.id, tenantId });
-        if (!staff) return res.status(404).json({ error: 'Staff member not found' });
+        if (!staff) return res.status(404).json({ success: false, error: 'Staff member not found' });
 
-        if (name) staff.name = name.trim();
-        if (email && email.toLowerCase() !== staff.email) {
-            const dup = await User.findOne({ email: email.toLowerCase(), _id: { $ne: staff._id } });
-            if (dup) return res.status(400).json({ error: 'Email/username is already in use by another account' });
-            staff.email = email.toLowerCase().trim();
+        if (name) {
+            staff.name = name;
+            staff.fullName = name;
         }
+        if (email && email !== staff.email) {
+            const dup = await User.findOne({
+                $or: [{ email }, { username: email }],
+                _id: { $ne: staff._id }
+            });
+            if (dup) return res.status(400).json({ success: false, error: 'Email/username is already in use' });
+            staff.email = email;
+            staff.username = email;
+        }
+        if (phone !== undefined) staff.phone = phone.trim();
         if (password) {
             const salt = await bcrypt.genSalt(10);
             staff.password = await bcrypt.hash(password, salt);
@@ -95,13 +142,16 @@ router.put('/:id', auth, async (req, res) => {
 
         await staff.save();
 
-        const staffData = staff.toObject();
-        delete staffData.password;
+        const staffData = formatStaffOutput(staff);
 
-        res.json({ success: true, message: 'Staff member updated successfully', staff: staffData });
+        res.json({
+            success: true,
+            message: 'Staff member updated successfully',
+            staff: staffData
+        });
     } catch (err) {
         console.error('Update staff error:', err);
-        res.status(500).json({ error: 'Failed to update staff member' });
+        res.status(500).json({ success: false, error: 'Failed to update staff member' });
     }
 });
 
@@ -114,12 +164,15 @@ router.delete('/:id', auth, async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
         const staff = await User.findOneAndDelete({ _id: req.params.id, tenantId });
-        if (!staff) return res.status(404).json({ error: 'Staff member not found' });
+        if (!staff) return res.status(404).json({ success: false, error: 'Staff member not found' });
 
-        res.json({ success: true, message: `Staff member ${staff.name} removed successfully` });
+        res.json({
+            success: true,
+            message: `Staff member ${staff.name} removed successfully`
+        });
     } catch (err) {
         console.error('Delete staff error:', err);
-        res.status(500).json({ error: 'Failed to delete staff member' });
+        res.status(500).json({ success: false, error: 'Failed to delete staff member' });
     }
 });
 

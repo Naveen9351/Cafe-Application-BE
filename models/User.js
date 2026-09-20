@@ -8,11 +8,14 @@ const userSchema = new mongoose.Schema({
     required: function () { return this.role !== 'super_admin'; }
   },
   name: { type: String, required: true, trim: true },
+  fullName: { type: String, trim: true },
+  username: { type: String, trim: true },
   email: { type: String, required: true, unique: true, trim: true },
+  phone: { type: String, trim: true },
   password: { type: String, required: true },
   role: {
     type: String,
-    enum: ['super_admin', 'admin', 'staff', 'kitchen'],
+    enum: ['super_admin', 'admin', 'manager', 'cashier', 'chef', 'waiter', 'staff', 'kitchen', 'custom'],
     default: 'staff'
   },
   status: {
@@ -20,7 +23,7 @@ const userSchema = new mongoose.Schema({
     enum: ['active', 'inactive', 'suspended'],
     default: 'active'
   },
-  permissions: [{ type: String }], // Optional granular permissions
+  permissions: { type: mongoose.Schema.Types.Mixed }, // Can be Array of strings or Map/Object of boolean flags
   profileImage: { type: String }, // Admin profile picture
   lastLogin: { type: Date },
   createdAt: { type: Date, default: Date.now }
