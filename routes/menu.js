@@ -270,6 +270,8 @@ router.put('/:id', [auth, checkRole(['admin', 'super_admin'])], upload.single('i
           return res.status(400).json({ error: `Discount amount (₹${discountObj.value}) must be less than original price (₹${effectivePrice})` });
         }
       }
+      updateData.discount = discountObj;
+    }
 
     // Handle Variants / Labels & Pricing
     if (req.body.variants !== undefined) {
