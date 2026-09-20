@@ -140,9 +140,13 @@ router.put('/:id', auth, async (req, res) => {
         if (enableGratuity !== undefined) tenant.settings.enableGratuity = enableGratuity;
         if (req.body.enableEstimatedPrepTime !== undefined) {
             tenant.settings.enableEstimatedPrepTime = Boolean(req.body.enableEstimatedPrepTime);
+        } else if (req.body.settings?.enableEstimatedPrepTime !== undefined) {
+            tenant.settings.enableEstimatedPrepTime = Boolean(req.body.settings.enableEstimatedPrepTime);
         }
         if (req.body.enableKhata !== undefined) {
             tenant.settings.enableKhata = Boolean(req.body.enableKhata);
+        } else if (req.body.settings?.enableKhata !== undefined) {
+            tenant.settings.enableKhata = Boolean(req.body.settings.enableKhata);
         }
 
         await tenant.save();
@@ -157,24 +161,35 @@ router.put('/:id', auth, async (req, res) => {
 router.post('/upgrade-plan', auth, async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
-        const { planId, paymentMethod, paymentId } = req.body;
+        const { planId, plan, paymentMethod, paymentId, amount, transactionRef } = req.body;
+
+        const effectivePlanId = planId || plan;
+
+        // Security check: Must have verified payment reference
+        if (!paymentId || !paymentMethod) {
+            return res.status(400).json({ error: 'Payment required: A verified payment transaction reference (paymentId) and method are required to activate subscription.' });
+        }
 
         const tenant = await Tenant.findById(tenantId);
         if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
         const PLANS = {
-            starter: { name: 'Starter Plan', price: 999, durationDays: 30, orderLimit: 5000 },
-            growth: { name: 'Growth Suite', price: 1999, durationDays: 30, orderLimit: 25000 },
-            enterprise: { name: 'Pro Enterprise (Flagship)', price: 3999, durationDays: 30, orderLimit: 999999 }
+            '1_month': { name: '1 Month Starter', price: 999, durationDays: 30, orderLimit: 999999 },
+            '6_months': { name: '6 Months Saver', price: 4999, durationDays: 180, orderLimit: 999999 },
+            '1_year': { name: '1 Year Ultimate Pro', price: 8999, durationDays: 365, orderLimit: 999999 },
+            starter: { name: '1 Month Starter', price: 999, durationDays: 30, orderLimit: 999999 },
+            growth: { name: '6 Months Saver', price: 4999, durationDays: 180, orderLimit: 999999 },
+            enterprise: { name: '1 Year Ultimate Pro', price: 8999, durationDays: 365, orderLimit: 999999 }
         };
 
-        const chosenPlan = PLANS[planId] || PLANS.growth;
+        const chosenPlan = PLANS[effectivePlanId] || PLANS['1_month'];
+        const actualPrice = amount ? Number(amount) : (req.body.price ? Number(req.body.price) : chosenPlan.price);
         const startDate = new Date();
         const endDate = new Date(Date.now() + chosenPlan.durationDays * 24 * 60 * 60 * 1000);
 
         tenant.subscription = {
             plan: chosenPlan.name,
-            price: chosenPlan.price,
+            price: actualPrice,
             startDate,
             endDate,
             isActive: true,
@@ -192,16 +207,21 @@ router.post('/upgrade-plan', auth, async (req, res) => {
         if (!tenant.subscriptionHistory) tenant.subscriptionHistory = [];
         tenant.subscriptionHistory.push({
             plan: chosenPlan.name,
-            price: chosenPlan.price,
+            price: actualPrice,
             startDate,
             endDate,
             status: 'active',
             actionDate: new Date(),
-            notes: `Upgraded in-app via ${paymentMethod || 'Online'} (Ref: ${paymentId || 'DIRECT_PORTAL'})`
+            notes: `Paid & Activated via ${paymentMethod} | Ref: ${paymentId}${transactionRef ? ` | Bank Ref: ${transactionRef}` : ''} | ₹${actualPrice}`
         });
 
         await tenant.save();
-        res.json({ success: true, message: `Successfully upgraded to ${chosenPlan.name}!`, tenant });
+        res.json({ 
+            success: true, 
+            message: `Payment of ₹${actualPrice} verified! Successfully activated ${chosenPlan.name}!`, 
+            paymentId,
+            tenant 
+        });
     } catch (err) {
         console.error("In-app plan upgrade error:", err);
         res.status(500).json({ error: "Failed to upgrade plan: " + err.message });
