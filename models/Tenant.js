@@ -45,6 +45,7 @@ const tenantSchema = new mongoose.Schema({
     taxPercentage: { type: Number, default: 5 }, // GST %
     logo: { type: String }, // URL to logo
     enableEstimatedPrepTime: { type: Boolean, default: false }, // Kitchen prep time estimation toggle (default OFF)
+    enableKhata: { type: Boolean, default: false }, // Indian customer credit / borrow (Udhari) toggle (default OFF)
     categories: {
       type: [{ name: String, id: String, icon: String }],
       default: [

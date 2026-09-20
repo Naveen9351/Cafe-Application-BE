@@ -141,12 +141,70 @@ router.put('/:id', auth, async (req, res) => {
         if (req.body.enableEstimatedPrepTime !== undefined) {
             tenant.settings.enableEstimatedPrepTime = Boolean(req.body.enableEstimatedPrepTime);
         }
+        if (req.body.enableKhata !== undefined) {
+            tenant.settings.enableKhata = Boolean(req.body.enableKhata);
+        }
 
         await tenant.save();
         res.json(tenant);
     } catch (err) {
         console.error("Update tenant error:", err);
         res.status(500).json({ error: "Failed to update tenant" });
+    }
+});
+
+// In-App Tenant Subscription Plan Upgrade (Tenant Admin / Owner)
+router.post('/upgrade-plan', auth, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId;
+        const { planId, paymentMethod, paymentId } = req.body;
+
+        const tenant = await Tenant.findById(tenantId);
+        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+
+        const PLANS = {
+            starter: { name: 'Starter Plan', price: 999, durationDays: 30, orderLimit: 5000 },
+            growth: { name: 'Growth Suite', price: 1999, durationDays: 30, orderLimit: 25000 },
+            enterprise: { name: 'Pro Enterprise (Flagship)', price: 3999, durationDays: 30, orderLimit: 999999 }
+        };
+
+        const chosenPlan = PLANS[planId] || PLANS.growth;
+        const startDate = new Date();
+        const endDate = new Date(Date.now() + chosenPlan.durationDays * 24 * 60 * 60 * 1000);
+
+        tenant.subscription = {
+            plan: chosenPlan.name,
+            price: chosenPlan.price,
+            startDate,
+            endDate,
+            isActive: true,
+            orderLimit: chosenPlan.orderLimit,
+            orderCount: tenant.subscription?.orderCount || 0,
+            features: {
+                emailSupport: true,
+                prioritySupport: true,
+                customBranding: true,
+                orderTimer: true,
+                advancedAnalytics: true
+            }
+        };
+
+        if (!tenant.subscriptionHistory) tenant.subscriptionHistory = [];
+        tenant.subscriptionHistory.push({
+            plan: chosenPlan.name,
+            price: chosenPlan.price,
+            startDate,
+            endDate,
+            status: 'active',
+            actionDate: new Date(),
+            notes: `Upgraded in-app via ${paymentMethod || 'Online'} (Ref: ${paymentId || 'DIRECT_PORTAL'})`
+        });
+
+        await tenant.save();
+        res.json({ success: true, message: `Successfully upgraded to ${chosenPlan.name}!`, tenant });
+    } catch (err) {
+        console.error("In-app plan upgrade error:", err);
+        res.status(500).json({ error: "Failed to upgrade plan: " + err.message });
     }
 });
 
