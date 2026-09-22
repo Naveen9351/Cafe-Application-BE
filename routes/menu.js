@@ -111,7 +111,20 @@ router.get('/', async (req, res) => {
       query.name = { $regex: search, $options: 'i' };
     }
 
-    const rawItems = await MenuItem.find(query).sort({ category: 1, name: 1 });
+    let rawItems = await MenuItem.find(query).sort({ category: 1, name: 1 });
+    
+    // Auto-seed starter menu items if tenant has 0 items in total
+    if (tenantId && rawItems.length === 0 && (!category || category === 'all') && !search) {
+      try {
+        const { seedStarterMenuItems } = require('../utils/starterMenu');
+        const seeded = await seedStarterMenuItems(tenantId);
+        if (seeded && seeded.length > 0) {
+          rawItems = await MenuItem.find(query).sort({ category: 1, name: 1 });
+        }
+      } catch (seedErr) {
+        console.warn('Auto-seed check error in GET /menu:', seedErr.message);
+      }
+    }
     
     // Auto-repair items with missing or non-URL images
     const items = rawItems.map(item => {

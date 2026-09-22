@@ -87,13 +87,46 @@ router.post(
       }
 
       // 1. Fetch all items (Security: Verify prices server-side)
+      const cleanItemId = (raw) => {
+        if (!raw) return '';
+        const str = String(raw).trim();
+        return str.includes('_') ? str.split('_')[0] : str;
+      };
+
       const itemIds = items
-        .map(i => i.id || i.itemId || i.item || i._id)
+        .map(i => cleanItemId(i.id || i.itemId || i.item || i._id))
         .filter(id => id && mongoose.Types.ObjectId.isValid(id));
-      const dbItems = await MenuItem.find({
+
+      let dbItems = await MenuItem.find({
         _id: { $in: itemIds },
         tenantId: tenantId
       });
+
+      // Fallback: If no items found, check if tenant needs starter dishes or name-based matching
+      if (dbItems.length === 0) {
+        try {
+          const { seedStarterMenuItems } = require('../utils/starterMenu');
+          await seedStarterMenuItems(tenantId);
+          
+          const clientNames = items
+            .map(i => (i.name || '').replace(/\s*\([^)]*\)/, '').trim())
+            .filter(Boolean);
+
+          dbItems = await MenuItem.find({
+            tenantId: tenantId,
+            $or: [
+              { _id: { $in: itemIds } },
+              { name: { $in: clientNames } }
+            ]
+          });
+
+          if (dbItems.length === 0) {
+            dbItems = await MenuItem.find({ tenantId: tenantId });
+          }
+        } catch (seedErr) {
+          console.warn('Fallback seeding error in create order:', seedErr.message);
+        }
+      }
 
       if (dbItems.length === 0) {
         return res.status(400).json({ error: 'Invalid items or items not found for this tenant' });
@@ -104,8 +137,17 @@ router.post(
       const orderItems = [];
 
       for (const clientItem of items) {
-        const cId = String(clientItem.id || clientItem.itemId || clientItem.item || clientItem._id || '');
-        const dbItem = dbItems.find(i => i._id.toString() === cId);
+        const cId = cleanItemId(clientItem.id || clientItem.itemId || clientItem.item || clientItem._id || '');
+        const clientName = (clientItem.name || '').replace(/\s*\([^)]*\)/, '').trim().toLowerCase();
+
+        let dbItem = dbItems.find(i => i._id.toString() === cId);
+        if (!dbItem && clientName) {
+          dbItem = dbItems.find(i => (i.name || '').trim().toLowerCase() === clientName);
+        }
+        if (!dbItem && dbItems.length > 0 && (!cId || !mongoose.Types.ObjectId.isValid(cId))) {
+          dbItem = dbItems.find(i => (i.name || '').toLowerCase().includes(clientName) || clientName.includes((i.name || '').toLowerCase()));
+        }
+
         if (dbItem) {
           const quantity = clientItem.quantity || 1;
           

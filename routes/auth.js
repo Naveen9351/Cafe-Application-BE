@@ -214,6 +214,14 @@ router.post(
             tenant.ownerId = user._id;
             await tenant.save();
 
+            // 5. Auto-seed Starter Menu for new tenant
+            try {
+                const { seedStarterMenuItems } = require('../utils/starterMenu');
+                await seedStarterMenuItems(tenant._id);
+            } catch (seedErr) {
+                console.warn('Failed to seed starter menu for tenant:', seedErr.message);
+            }
+
             res.status(201).json({ 
                 message: 'Tenant registered successfully', 
                 tenantId: tenant._id 
