@@ -13,6 +13,9 @@ const customerSchema = new mongoose.Schema({
   loyaltyPoints: { type: Number, default: 0 },
   visitCount: { type: Number, default: 0 },
   totalSpent: { type: Number, default: 0 },
+  isPhoneVerified: { type: Boolean, default: false },
+  firstVisit: { type: Date, default: Date.now },
+  lastVisit: { type: Date, default: Date.now },
   createdAt: { type: Date, default: Date.now }
 });
 

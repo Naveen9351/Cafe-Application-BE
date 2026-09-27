@@ -8,6 +8,7 @@ const checkRole = require('../middleware/checkRole');
 const mongoose = require('mongoose');
 const deductStockForOrder = require('../utils/stockDeductor');
 const Customer = require('../models/Customer');
+const Table = require('../models/Table');
 
 // Helper to calculate date boundaries
 const getDateRangeFilter = (range, startDate, endDate) => {
@@ -195,23 +196,34 @@ router.post(
       // Calculate loyalty points (5% cashback)
       const pointsEarned = Math.round(subTotal * 0.05);
 
-      // Handle customer loyalty update if phone provided
+      // Handle customer loyalty & CRM update if phone provided
       if (customerDetails && customerDetails.phone) {
         try {
-          let customer = await Customer.findOne({ tenantId, phone: customerDetails.phone });
+          const cleanPhone = String(customerDetails.phone).replace(/[^0-9]/g, '');
+          let customer = await Customer.findOne({ tenantId, phone: cleanPhone });
           if (!customer) {
             customer = new Customer({
               tenantId,
               name: customerDetails.name || 'Walk-in Customer',
-              phone: customerDetails.phone,
+              phone: cleanPhone,
               loyaltyPoints: pointsEarned,
               totalSpent: total,
-              visitCount: 1
+              visitCount: 1,
+              isPhoneVerified: Boolean(customerDetails.isPhoneVerified),
+              firstVisit: new Date(),
+              lastVisit: new Date()
             });
           } else {
+            if (customerDetails.name && customerDetails.name !== 'Guest' && customerDetails.name !== 'Walk-in Customer') {
+              customer.name = customerDetails.name;
+            }
+            if (customerDetails.isPhoneVerified) {
+              customer.isPhoneVerified = true;
+            }
             customer.loyaltyPoints += pointsEarned;
             customer.totalSpent += total;
             customer.visitCount += 1;
+            customer.lastVisit = new Date();
           }
           await customer.save();
         } catch (crmErr) {
@@ -228,6 +240,9 @@ router.post(
         subTotal,
         taxAmount,
         total,
+        settledAmount: req.body.settledAmount !== undefined ? Number(req.body.settledAmount) : (paymentStatus === 'paid' ? total : undefined),
+        paymentMethod: req.body.paymentMethod || 'UPI',
+        orderType: req.body.orderType || (tableNumber === 'Takeaway' || tableNumber === 'Counter' ? 'takeaway' : 'dine_in'),
         customerDetails: customerDetails || {},
         status: status || 'pending',
         paymentStatus: paymentStatus || 'pending',
@@ -416,35 +431,67 @@ router.put('/:id/status', auth, async (req, res) => {
   }
 });
 
-// SETTLE ALL ACTIVE ORDERS FOR A TABLE (Table Batch Settle & Free Table)
+// SETTLE ALL ACTIVE ORDERS FOR A TABLE (Table Batch Settle & Free Table, with Merged Tables & Actual Amount support)
 router.put('/table/:tableNumber/settle', auth, async (req, res) => {
   try {
     const rawTable = String(req.params.tableNumber).trim();
     const numOnly = rawTable.replace(/[^0-9]/g, '') || rawTable;
-    const { paymentMethod, paymentStatus } = req.body;
+    const { paymentMethod, paymentStatus, actualAmount, settledAmount, mergedTables } = req.body;
 
     let tenantId = req.user.tenantId;
     if (req.user.role === 'super_admin' && req.body.tenantId) {
       tenantId = req.body.tenantId;
     }
 
-    const tablePattern = new RegExp(`^(${rawTable}|Table ${numOnly}|table-${numOnly}|${numOnly})$`, 'i');
+    // Build list of all tables being settled (primary + any merged tables)
+    const targetTables = [rawTable];
+    if (Array.isArray(mergedTables)) {
+      mergedTables.forEach(t => {
+        const cleanT = String(t).trim();
+        if (cleanT && !targetTables.includes(cleanT)) targetTables.push(cleanT);
+      });
+    }
+
+    const tablePatterns = targetTables.map(t => {
+      const n = t.replace(/[^0-9]/g, '') || t;
+      return new RegExp(`^(${t}|Table ${n}|table-${n}|${n})$`, 'i');
+    });
+
     const query = {
       status: { $nin: ['completed', 'cancelled'] },
-      tableNumber: { $regex: tablePattern }
+      $or: tablePatterns.map(p => ({ tableNumber: { $regex: p } }))
     };
     if (tenantId) query.tenantId = tenantId;
 
     const activeOrders = await Order.find(query);
     if (!activeOrders || activeOrders.length === 0) {
-      return res.status(200).json({ message: 'No active orders found for Table ' + rawTable, count: 0, settledOrders: [] });
+      return res.status(200).json({ message: 'No active orders found for Table(s): ' + targetTables.join(', '), count: 0, settledOrders: [] });
     }
 
+    const actualSettledAmt = actualAmount !== undefined ? Number(actualAmount) : (settledAmount !== undefined ? Number(settledAmount) : null);
+
     const settledOrders = [];
-    for (const ord of activeOrders) {
+    const totalOriginalSum = activeOrders.reduce((sum, o) => sum + (Number(o.total) || 0), 0);
+
+    for (let i = 0; i < activeOrders.length; i++) {
+      const ord = activeOrders[i];
       ord.status = 'completed';
       ord.paymentStatus = paymentStatus || 'paid';
       if (paymentMethod) ord.paymentMethod = paymentMethod;
+
+      // Store actual settled amount separately from original total
+      if (actualSettledAmt !== null) {
+        if (activeOrders.length === 1) {
+          ord.settledAmount = actualSettledAmt;
+        } else {
+          // Distribute proportionally if multiple orders were merged
+          const ratio = totalOriginalSum > 0 ? (ord.total / totalOriginalSum) : (1 / activeOrders.length);
+          ord.settledAmount = Math.round(actualSettledAmt * ratio);
+        }
+      } else {
+        ord.settledAmount = ord.total;
+      }
+
       await ord.save();
       settledOrders.push(ord);
 
@@ -453,11 +500,31 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
       }
     }
 
+    // Free all settled tables in the Table model
+    if (tenantId && Table) {
+      try {
+        await Table.updateMany(
+          {
+            tenantId,
+            $or: tablePatterns.map(p => ({ tableNumber: { $regex: p } }))
+          },
+          { $set: { status: 'available', currentOrder: null } }
+        );
+        if (global.io) {
+          global.io.to(tenantId.toString()).emit('tablesUpdated', { tables: targetTables, status: 'available' });
+        }
+      } catch (tblErr) {
+        console.warn('Could not update Table collection status:', tblErr.message);
+      }
+    }
+
     res.json({
       success: true,
-      message: `Successfully settled ${settledOrders.length} order(s) for Table ${rawTable}`,
+      message: `Successfully settled ${settledOrders.length} order(s) for Table(s) ${targetTables.join(', ')}`,
       count: settledOrders.length,
-      settledOrders
+      settledOrders,
+      settledTables: targetTables,
+      settledAmount: actualSettledAmt
     });
   } catch (err) {
     console.error('Table batch settle error:', err);

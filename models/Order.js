@@ -41,6 +41,8 @@ const orderSchema = new mongoose.Schema({
   subTotal: { type: Number, required: true },
   taxAmount: { type: Number, default: 0 },
   total: { type: Number, required: true },
+  settledAmount: { type: Number },
+  paymentMethod: { type: String, default: 'UPI' },
 
   status: {
     type: String,
@@ -63,7 +65,9 @@ const orderSchema = new mongoose.Schema({
 
   customerDetails: {
     name: { type: String },
-    phone: { type: String }
+    phone: { type: String },
+    isPhoneVerified: { type: Boolean, default: false },
+    notes: { type: String }
   },
 
   // Split bill info

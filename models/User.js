@@ -16,8 +16,11 @@ const userSchema = new mongoose.Schema({
   role: {
     type: String,
     enum: ['super_admin', 'admin', 'manager', 'cashier', 'chef', 'waiter', 'staff', 'kitchen', 'custom'],
-    default: 'staff'
+    default: 'staff',
+    lowercase: true,
+    trim: true
   },
+  designation: { type: String, trim: true },
   status: {
     type: String,
     enum: ['active', 'inactive', 'suspended'],

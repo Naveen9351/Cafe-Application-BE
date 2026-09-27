@@ -262,12 +262,103 @@ router.post('/customers', auth, async (req, res) => {
   }
 });
 
-// Get all customers (CRM List)
+// Get all customers (CRM List with complete order history, visit dates, spend, and verification status)
 router.get('/customers', auth, async (req, res) => {
   try {
-    const customers = await Customer.find({ tenantId: req.tenantId });
-    res.json(customers);
+    const tenantId = req.tenantId || req.user?.tenantId || req.headers['x-tenant-id'];
+    const query = tenantId ? { tenantId } : {};
+
+    let customers = await Customer.find(query).sort({ updatedAt: -1, createdAt: -1 });
+
+    // Fetch tenant's orders to link order history and backfill if necessary
+    const orders = await Order.find(query).sort({ createdAt: -1 });
+
+    // Map customer phones to their orders
+    const ordersByPhone = {};
+    orders.forEach(ord => {
+      const p = ord.customerDetails?.phone ? String(ord.customerDetails.phone).replace(/[^0-9]/g, '') : null;
+      if (p) {
+        if (!ordersByPhone[p]) ordersByPhone[p] = [];
+        ordersByPhone[p].push(ord);
+      }
+    });
+
+    // Backfill any customers from orders who may not be in the Customer collection yet
+    for (const [phone, phoneOrders] of Object.entries(ordersByPhone)) {
+      let cust = customers.find(c => c.phone === phone);
+      if (!cust) {
+        const firstOrd = phoneOrders[phoneOrders.length - 1];
+        const lastOrd = phoneOrders[0];
+        const totalSpent = phoneOrders.reduce((sum, o) => sum + (Number(o.settledAmount || o.total) || 0), 0);
+        const newCust = new Customer({
+          tenantId: tenantId || firstOrd.tenantId,
+          name: lastOrd.customerDetails?.name || 'Walk-in Guest',
+          phone,
+          loyaltyPoints: Math.round(totalSpent * 0.05),
+          totalSpent,
+          visitCount: phoneOrders.length,
+          isPhoneVerified: Boolean(lastOrd.customerDetails?.isPhoneVerified),
+          firstVisit: firstOrd.createdAt || new Date(),
+          lastVisit: lastOrd.createdAt || new Date()
+        });
+        await newCust.save();
+        customers.push(newCust);
+      }
+    }
+
+    // Build enriched customer objects
+    const enriched = customers.map(cust => {
+      const custObj = cust.toObject ? cust.toObject() : cust;
+      const phoneClean = String(cust.phone || '').replace(/[^0-9]/g, '');
+      const custOrders = ordersByPhone[phoneClean] || [];
+
+      const totalVisits = Math.max(cust.visitCount || 0, custOrders.length);
+      const lifetimeSpend = custOrders.length > 0 
+        ? custOrders.reduce((sum, o) => sum + (Number(o.settledAmount || o.total) || 0), 0)
+        : (cust.totalSpent || 0);
+      const aov = totalVisits > 0 ? Math.round(lifetimeSpend / totalVisits) : 0;
+
+      const firstVisit = cust.firstVisit || (custOrders.length > 0 ? custOrders[custOrders.length - 1].createdAt : cust.createdAt);
+      const lastVisit = cust.lastVisit || (custOrders.length > 0 ? custOrders[0].createdAt : cust.createdAt);
+
+      // Customer tier calculation
+      let tier = 'New';
+      if (lifetimeSpend >= 2500 || totalVisits >= 6) {
+        tier = 'VIP';
+      } else if (totalVisits >= 2 || lifetimeSpend >= 800) {
+        tier = 'Regular';
+      }
+
+      return {
+        ...custObj,
+        totalVisits,
+        lifetimeSpend,
+        averageOrderValue: aov,
+        firstVisit,
+        lastVisit,
+        tier,
+        isPhoneVerified: Boolean(cust.isPhoneVerified || custOrders.some(o => o.customerDetails?.isPhoneVerified)),
+        orders: custOrders.map(o => ({
+          _id: o._id,
+          orderNumber: o.orderNumber,
+          tableNumber: o.tableNumber,
+          createdAt: o.createdAt,
+          orderType: o.orderType || 'dine_in',
+          subTotal: o.subTotal,
+          taxAmount: o.taxAmount,
+          total: o.total,
+          settledAmount: o.settledAmount || o.total,
+          paymentMethod: o.paymentMethod || 'UPI',
+          paymentStatus: o.paymentStatus,
+          status: o.status,
+          items: o.items || []
+        }))
+      };
+    });
+
+    res.json(enriched);
   } catch (err) {
+    console.error('Fetch CRM customers error:', err);
     res.status(500).json({ error: err.message });
   }
 });

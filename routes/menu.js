@@ -162,7 +162,10 @@ router.post(
 
     try {
       const { name, description, price, category, isVeg, isAvailable } = req.body;
-      const numPrice = Number(price);
+      const numPrice = Math.round(Number(price));
+      if (isNaN(numPrice) || numPrice < 0) {
+        return res.status(400).json({ error: 'Price must be a valid integer number' });
+      }
 
       // Parse & Validate Discount
       let discountObj = { isDiscounted: false, type: 'percentage', value: 0 };
@@ -207,11 +210,28 @@ router.post(
               .filter(v => v && typeof v === 'object' && v.name && String(v.name).trim())
               .map(v => ({
                 name: String(v.name).trim(),
-                price: Number(v.price) >= 0 ? Number(v.price) : numPrice
+                price: Number(v.price) >= 0 ? Math.round(Number(v.price)) : numPrice
               }));
           }
         } catch (e) {
           console.warn('Variants parse error:', e.message);
+        }
+      }
+
+      let addonsArr = [];
+      if (req.body.addons) {
+        try {
+          const parsed = typeof req.body.addons === 'string' ? JSON.parse(req.body.addons) : req.body.addons;
+          if (Array.isArray(parsed)) {
+            addonsArr = parsed
+              .filter(a => a && typeof a === 'object' && a.name && String(a.name).trim())
+              .map(a => ({
+                name: String(a.name).trim(),
+                price: Number(a.price) >= 0 ? Math.round(Number(a.price)) : 0
+              }));
+          }
+        } catch (e) {
+          console.warn('Addons parse error:', e.message);
         }
       }
 
@@ -225,7 +245,8 @@ router.post(
         isVeg: isVeg !== undefined ? (isVeg === 'true' || isVeg === true) : true,
         isAvailable: isAvailable !== undefined ? (isAvailable === 'true' || isAvailable === true) : true,
         discount: discountObj,
-        variants: variantsArr
+        variants: variantsArr,
+        addons: addonsArr
       });
 
       await newItem.save();
@@ -251,9 +272,9 @@ router.put('/:id', [auth, checkRole(['admin', 'super_admin'])], upload.single('i
     if (isAvailable !== undefined) updateData.isAvailable = (isAvailable === 'true' || isAvailable === true);
 
     if (price !== undefined) {
-      const numPrice = Number(price);
+      const numPrice = Math.round(Number(price));
       if (isNaN(numPrice) || numPrice < 0) {
-        return res.status(400).json({ error: 'Price must be a non-negative number' });
+        return res.status(400).json({ error: 'Price must be a non-negative integer' });
       }
       updateData.price = numPrice;
     }
@@ -296,13 +317,32 @@ router.put('/:id', [auth, checkRole(['admin', 'super_admin'])], upload.single('i
             .filter(v => v && typeof v === 'object' && v.name && String(v.name).trim())
             .map(v => ({
               name: String(v.name).trim(),
-              price: Number(v.price) >= 0 ? Number(v.price) : (updateData.price || 0)
+              price: Number(v.price) >= 0 ? Math.round(Number(v.price)) : (updateData.price || 0)
             }));
         }
       } catch (e) {
         console.warn('Variants parse error in update:', e.message);
       }
       updateData.variants = variantsArr;
+    }
+
+    // Handle Addons
+    if (req.body.addons !== undefined) {
+      let addonsArr = [];
+      try {
+        const parsed = typeof req.body.addons === 'string' ? JSON.parse(req.body.addons) : req.body.addons;
+        if (Array.isArray(parsed)) {
+          addonsArr = parsed
+            .filter(a => a && typeof a === 'object' && a.name && String(a.name).trim())
+            .map(a => ({
+              name: String(a.name).trim(),
+              price: Number(a.price) >= 0 ? Math.round(Number(a.price)) : 0
+            }));
+        }
+      } catch (e) {
+        console.warn('Addons parse error in update:', e.message);
+      }
+      updateData.addons = addonsArr;
     }
 
     if (req.file) {

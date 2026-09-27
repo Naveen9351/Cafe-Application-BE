@@ -10,7 +10,7 @@ const Tenant = require('../models/Tenant');
 router.post(
     '/login',
     [
-        body('email').trim().isEmail().withMessage('Please enter a valid email address'),
+        body('email').trim().notEmpty().withMessage('Please enter your email or username'),
         body('password').notEmpty().withMessage('Password is required'),
     ],
     async (req, res) => {
@@ -23,9 +23,12 @@ router.post(
         }
 
         const { email, password } = req.body;
+        const identifier = (email || '').toLowerCase().trim();
 
         try {
-            const user = await User.findOne({ email: email.toLowerCase() }).populate('tenantId');
+            const user = await User.findOne({
+                $or: [{ email: identifier }, { username: identifier }]
+            }).populate('tenantId');
 
             if (!user) {
                 return res.status(400).json({ error: 'Invalid email or password' });
@@ -88,6 +91,8 @@ router.post(
                     name: user.name,
                     email: user.email,
                     role: user.role,
+                    designation: user.designation || user.role,
+                    permissions: user.permissions || {},
                     tenantId: user.tenantId?._id || null,
                     tenantName: user.tenantId?.name || 'Platform Admin',
                     restaurantName: user.tenantId?.name || user.name,
@@ -125,6 +130,8 @@ router.get('/verify-session', async (req, res) => {
                 name: user.name,
                 email: user.email,
                 role: user.role,
+                designation: user.designation || user.role,
+                permissions: user.permissions || {},
                 tenantId: user.tenantId?._id || null,
                 tenantName: user.tenantId?.name || 'Platform Admin',
                 restaurantName: user.tenantId?.name || user.name,

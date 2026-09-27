@@ -5,6 +5,24 @@ const User = require('../models/User');
 const auth = require('../middleware/auth');
 
 /**
+ * Helper to normalize role to valid User schema enum
+ */
+function normalizeStaffRole(rawRole) {
+    if (!rawRole) return 'staff';
+    const clean = String(rawRole).toLowerCase().trim();
+    if (clean.includes('cashier')) return 'cashier';
+    if (clean.includes('manager')) return 'manager';
+    if (clean.includes('chef') || clean.includes('cook')) return 'chef';
+    if (clean.includes('waiter') || clean.includes('captain') || clean.includes('server')) return 'waiter';
+    if (clean.includes('kitchen')) return 'kitchen';
+    if (clean === 'admin') return 'admin';
+    if (clean === 'super_admin') return 'super_admin';
+    const validRoles = ['super_admin', 'admin', 'manager', 'cashier', 'chef', 'waiter', 'staff', 'kitchen', 'custom'];
+    if (validRoles.includes(clean)) return clean;
+    return 'custom';
+}
+
+/**
  * Helper to normalize staff object for frontend
  */
 function formatStaffOutput(staffDoc) {
@@ -12,6 +30,7 @@ function formatStaffOutput(staffDoc) {
     delete obj.password;
     obj.fullName = obj.fullName || obj.name;
     obj.username = obj.username || obj.email;
+    obj.role = obj.designation || obj.role;
     return obj;
 }
 
@@ -51,7 +70,9 @@ router.post('/', auth, async (req, res) => {
         const email = (req.body.username || req.body.email || '').toLowerCase().trim();
         const password = req.body.password;
         const phone = (req.body.phone || '').trim();
-        const role = req.body.role || 'cashier';
+        const rawRole = req.body.role || req.body.designation || 'cashier';
+        const role = normalizeStaffRole(rawRole);
+        const designation = String(rawRole).trim();
         const permissions = req.body.permissions || {};
         const status = req.body.status || 'active';
 
@@ -84,6 +105,7 @@ router.post('/', auth, async (req, res) => {
             phone,
             password: hashedPassword,
             role,
+            designation,
             status,
             permissions
         });
@@ -140,7 +162,10 @@ router.put('/:id', auth, async (req, res) => {
             const salt = await bcrypt.genSalt(10);
             staff.password = await bcrypt.hash(password, salt);
         }
-        if (role) staff.role = role;
+        if (role) {
+            staff.role = normalizeStaffRole(role);
+            staff.designation = String(role).trim();
+        }
         if (status) staff.status = status;
         if (permissions) staff.permissions = permissions;
 
