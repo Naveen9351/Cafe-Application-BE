@@ -70,6 +70,7 @@ app.use('/api/customer', require('./routes/customerAuth'));
 app.use('/api/tickets', require('./routes/tickets'));
 app.use('/api/staff', require('./routes/staff'));
 app.use('/api/khata', require('./routes/khata'));
+app.use('/api/admin', require('./routes/admin'));
 
 // Database Connection
 const seedDatabase = require('./utils/seeder');

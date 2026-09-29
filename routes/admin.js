@@ -260,4 +260,62 @@ router.get('/orders', auth, async (req, res) => {
   }
 });
 
+// GET /api/admin/notifications - Get last 7 days notifications
+router.get('/notifications', auth, async (req, res) => {
+  try {
+    const tenantId = req.user.tenantId || req.query.tenantId;
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    sevenDaysAgo.setHours(0, 0, 0, 0);
+
+    const query = {
+      createdAt: { $gte: sevenDaysAgo }
+    };
+    if (tenantId && req.user.role !== 'super_admin') {
+      query.tenantId = tenantId;
+    }
+
+    const orders = await Order.find(query).sort({ createdAt: -1 }).limit(100);
+
+    const notifications = orders.map(ord => {
+      const isSettled = ord.status === 'completed' || ord.paymentStatus === 'paid';
+      let notifType = 'new_order';
+      let title = `New Order #${ord.orderNumber || ord._id.toString().slice(-5).toUpperCase()}`;
+      let message = `Table ${ord.tableNumber || 'Takeaway'} placed an order of ₹${Math.round(ord.settledAmount || ord.total || 0)} (${ord.items?.length || 0} items)`;
+
+      if (ord.status === 'preparing') {
+        notifType = 'preparing';
+        title = `Order #${ord.orderNumber || ord._id.toString().slice(-5).toUpperCase()} in Kitchen`;
+        message = `Kitchen started preparing dishes for Table ${ord.tableNumber || 'Takeaway'}`;
+      } else if (ord.status === 'ready') {
+        notifType = 'ready';
+        title = `Order #${ord.orderNumber || ord._id.toString().slice(-5).toUpperCase()} Ready to Serve`;
+        message = `Dishes are prepared and ready for Table ${ord.tableNumber || 'Takeaway'}`;
+      } else if (isSettled) {
+        notifType = 'completed';
+        title = `Bill Settled • Table ${ord.tableNumber || 'Takeaway'}`;
+        message = `Bill of ₹${Math.round(ord.settledAmount || ord.total || 0)} settled via ${ord.paymentMethod || 'Cash'}`;
+      }
+
+      return {
+        id: `notif_${ord._id}`,
+        orderId: ord._id,
+        orderNumber: ord.orderNumber,
+        tableNumber: ord.tableNumber,
+        type: notifType,
+        title,
+        message,
+        amount: Math.round(ord.settledAmount || ord.total || 0),
+        status: ord.status,
+        timestamp: ord.createdAt
+      };
+    });
+
+    res.json({ notifications, count: notifications.length });
+  } catch (err) {
+    console.error('Get notifications error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 module.exports = router;

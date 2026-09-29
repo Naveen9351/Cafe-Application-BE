@@ -184,7 +184,8 @@ router.post(
             quantity: quantity,
             price: basePrice + addonsTotal,
             variant: selectedVariant,
-            addons: selectedAddons
+            addons: selectedAddons,
+            specialNotes: clientItem.specialNotes || clientItem.notes || ''
           });
         }
       }

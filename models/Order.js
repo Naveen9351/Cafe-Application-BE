@@ -33,7 +33,9 @@ const orderSchema = new mongoose.Schema({
           name: { type: String },
           price: { type: Number }
         }
-      ]
+      ],
+      specialNotes: { type: String, default: '' },
+      notes: { type: String, default: '' }
     }
   ],
 
