@@ -30,4 +30,6 @@ const TableSchema = new mongoose.Schema({
   timestamps: true
 });
 
+TableSchema.index({ tenantId: 1, tableNumber: 1 });
+
 module.exports = mongoose.model('Table', TableSchema);

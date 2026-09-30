@@ -260,7 +260,7 @@ router.get('/orders', auth, async (req, res) => {
   }
 });
 
-// GET /api/admin/notifications - Get last 7 days notifications
+// GET /api/admin/notifications - Get last 7 days notifications feed
 router.get('/notifications', auth, async (req, res) => {
   try {
     const tenantId = req.user.tenantId || req.query.tenantId;
@@ -268,14 +268,24 @@ router.get('/notifications', auth, async (req, res) => {
     sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
     sevenDaysAgo.setHours(0, 0, 0, 0);
 
-    const query = {
-      createdAt: { $gte: sevenDaysAgo }
-    };
+    const query = {};
     if (tenantId && req.user.role !== 'super_admin') {
       query.tenantId = tenantId;
     }
 
-    const orders = await Order.find(query).sort({ createdAt: -1 }).limit(100);
+    // Try finding within 7 days first
+    let orders = await Order.find({ ...query, createdAt: { $gte: sevenDaysAgo } })
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .lean();
+
+    // Fallback if low order volume in the exact 7-day window to show rich history
+    if (!orders || orders.length === 0) {
+      orders = await Order.find(query)
+        .sort({ createdAt: -1 })
+        .limit(50)
+        .lean();
+    }
 
     const notifications = orders.map(ord => {
       const isSettled = ord.status === 'completed' || ord.paymentStatus === 'paid';
@@ -286,15 +296,15 @@ router.get('/notifications', auth, async (req, res) => {
       if (ord.status === 'preparing') {
         notifType = 'preparing';
         title = `Order #${ord.orderNumber || ord._id.toString().slice(-5).toUpperCase()} in Kitchen`;
-        message = `Kitchen started preparing dishes for Table ${ord.tableNumber || 'Takeaway'}`;
+        message = `Kitchen is preparing dishes for Table ${ord.tableNumber || 'Takeaway'}`;
       } else if (ord.status === 'ready') {
         notifType = 'ready';
         title = `Order #${ord.orderNumber || ord._id.toString().slice(-5).toUpperCase()} Ready to Serve`;
-        message = `Dishes are prepared and ready for Table ${ord.tableNumber || 'Takeaway'}`;
+        message = `Dishes are ready for Table ${ord.tableNumber || 'Takeaway'}`;
       } else if (isSettled) {
         notifType = 'completed';
         title = `Bill Settled • Table ${ord.tableNumber || 'Takeaway'}`;
-        message = `Bill of ₹${Math.round(ord.settledAmount || ord.total || 0)} settled via ${ord.paymentMethod || 'Cash'}`;
+        message = `Payment of ₹${Math.round(ord.settledAmount || ord.total || 0)} received via ${ord.paymentMethod || 'UPI'}`;
       }
 
       return {
@@ -311,7 +321,7 @@ router.get('/notifications', auth, async (req, res) => {
       };
     });
 
-    res.json({ notifications, count: notifications.length });
+    res.json({ success: true, notifications, count: notifications.length });
   } catch (err) {
     console.error('Get notifications error:', err);
     res.status(500).json({ error: 'Server error' });

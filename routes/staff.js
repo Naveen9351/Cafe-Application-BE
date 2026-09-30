@@ -31,6 +31,7 @@ function formatStaffOutput(staffDoc) {
     obj.fullName = obj.fullName || obj.name;
     obj.username = obj.username || obj.email;
     obj.role = obj.designation || obj.role;
+    obj.isActive = obj.status === 'active' || obj.isActive === true;
     return obj;
 }
 
@@ -48,6 +49,7 @@ router.get('/', auth, async (req, res) => {
             role: { $nin: ['admin', 'super_admin'] }
         })
             .select('-password')
+            .lean()
             .sort({ createdAt: -1 });
 
         const formatted = staffList.map(formatStaffOutput);
@@ -74,7 +76,7 @@ router.post('/', auth, async (req, res) => {
         const role = normalizeStaffRole(rawRole);
         const designation = String(rawRole).trim();
         const permissions = req.body.permissions || {};
-        const status = req.body.status || 'active';
+        const status = req.body.status || (req.body.isActive === false ? 'inactive' : 'active');
 
         if (!name || !email || !password) {
             return res.status(400).json({
@@ -85,7 +87,7 @@ router.post('/', auth, async (req, res) => {
 
         const existing = await User.findOne({
             $or: [{ email }, { username: email }]
-        });
+        }).lean();
         if (existing) {
             return res.status(400).json({
                 success: false,
@@ -139,7 +141,9 @@ router.put('/:id', auth, async (req, res) => {
         const password = req.body.password;
         const role = req.body.role;
         const permissions = req.body.permissions;
-        const status = req.body.status;
+        const status = req.body.status !== undefined
+            ? req.body.status
+            : (req.body.isActive !== undefined ? (req.body.isActive ? 'active' : 'inactive') : undefined);
 
         const staff = await User.findOne({ _id: req.params.id, tenantId });
         if (!staff) return res.status(404).json({ success: false, error: 'Staff member not found' });
@@ -152,7 +156,7 @@ router.put('/:id', auth, async (req, res) => {
             const dup = await User.findOne({
                 $or: [{ email }, { username: email }],
                 _id: { $ne: staff._id }
-            });
+            }).lean();
             if (dup) return res.status(400).json({ success: false, error: 'Email/username is already in use' });
             staff.email = email;
             staff.username = email;

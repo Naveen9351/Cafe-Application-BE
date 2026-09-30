@@ -20,7 +20,7 @@ router.get('/', async (req, res) => {
     }
 
     const filter = tenantId ? { tenantId } : {};
-    let tables = await Table.find(filter).sort({ tableNumber: 1 });
+    let tables = await Table.find(filter).sort({ tableNumber: 1 }).lean();
 
     if (tenantId && tables.length === 0) {
       const initialTables = [

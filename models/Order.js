@@ -93,7 +93,9 @@ const orderSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-// Index for efficient querying of a tenant's orders
+// Indexes for high-speed querying of a tenant's orders
 orderSchema.index({ tenantId: 1, createdAt: -1 });
+orderSchema.index({ tenantId: 1, status: 1, createdAt: -1 });
+orderSchema.index({ tenantId: 1, tableNumber: 1, status: 1 });
 
 module.exports = mongoose.model('Order', orderSchema);

@@ -111,7 +111,7 @@ router.get('/', async (req, res) => {
       query.name = { $regex: search, $options: 'i' };
     }
 
-    let rawItems = await MenuItem.find(query).sort({ category: 1, name: 1 });
+    let rawItems = await MenuItem.find(query).sort({ category: 1, name: 1 }).lean();
     
     // Auto-seed starter menu items if tenant has 0 items in total
     if (tenantId && rawItems.length === 0 && (!category || category === 'all') && !search) {
@@ -119,7 +119,7 @@ router.get('/', async (req, res) => {
         const { seedStarterMenuItems } = require('../utils/starterMenu');
         const seeded = await seedStarterMenuItems(tenantId);
         if (seeded && seeded.length > 0) {
-          rawItems = await MenuItem.find(query).sort({ category: 1, name: 1 });
+          rawItems = await MenuItem.find(query).sort({ category: 1, name: 1 }).lean();
         }
       } catch (seedErr) {
         console.warn('Auto-seed check error in GET /menu:', seedErr.message);
@@ -128,7 +128,7 @@ router.get('/', async (req, res) => {
     
     // Auto-repair items with missing or non-URL images
     const items = rawItems.map(item => {
-      const plain = item.toObject();
+      const plain = item.toObject ? item.toObject() : { ...item };
       const img = plain.image;
       if (!img || typeof img !== 'string' || (!img.startsWith('http://') && !img.startsWith('https://') && !img.startsWith('/uploads'))) {
         plain.image = `https://image.pollinations.ai/prompt/delicious%20food%20photo%20of%20${encodeURIComponent(plain.name || 'food')}%20gourmet%20dish?width=500&height=400&nologo=true`;

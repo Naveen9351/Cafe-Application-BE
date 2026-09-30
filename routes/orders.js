@@ -319,7 +319,8 @@ router.get('/', auth, async (req, res) => {
 
     const orders = await Order.find(query)
       .sort({ createdAt: -1 })
-      .limit(200);
+      .limit(200)
+      .lean();
 
     res.json(orders);
   } catch (err) {
