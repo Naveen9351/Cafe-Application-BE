@@ -190,9 +190,9 @@ router.post(
         }
       }
 
-      const taxRate = 0.05; // 5% GST
-      const taxAmount = Math.round(subTotal * taxRate * 100) / 100;
-      const total = Math.round((subTotal + taxAmount) * 100) / 100;
+      const taxRate = 0; // Prices are all-inclusive / No extra GST added
+      const taxAmount = 0;
+      const total = Math.round(subTotal * 100) / 100;
 
       // Calculate loyalty points (5% cashback)
       const pointsEarned = Math.round(subTotal * 0.05);
@@ -274,6 +274,61 @@ router.post(
   }
 );
 
+// GET Active Order for Table/Phone (Public - for Customer Menu Dashboard)
+router.get('/active-session', async (req, res) => {
+  try {
+    const { tableNumber, tenantId, phone } = req.query;
+    if (!tableNumber && !phone) {
+      return res.json(null);
+    }
+
+    const recentWindow = new Date(Date.now() - 4 * 60 * 60 * 1000);
+    let queryConditions = {
+      status: { $in: ['pending', 'confirmed', 'preparing', 'ready'] },
+      createdAt: { $gte: recentWindow }
+    };
+
+    if (tenantId) {
+      queryConditions.tenantId = tenantId;
+    }
+
+    if (tableNumber && tableNumber !== 'Takeaway' && tableNumber !== 'Counter' && tableNumber !== 'Online Order') {
+      queryConditions.tableNumber = tableNumber;
+    } else if (phone) {
+      queryConditions['customerDetails.phone'] = phone;
+    } else {
+      return res.json(null);
+    }
+
+    const activeOrder = await Order.findOne(queryConditions)
+      .sort({ createdAt: -1 })
+      .populate('tenantId', 'name address phone settings')
+      .lean();
+
+    if (!activeOrder) {
+      return res.json(null);
+    }
+
+    // Attach all session orders for this dining table
+    const sessionOrders = await Order.find({
+      tenantId: activeOrder.tenantId?._id || activeOrder.tenantId,
+      status: { $nin: ['cancelled'] },
+      createdAt: { $gte: recentWindow },
+      $or: [
+        { tableNumber: activeOrder.tableNumber },
+        { 'customerDetails.phone': activeOrder.customerDetails?.phone }
+      ]
+    }).sort({ createdAt: 1 }).lean();
+
+    activeOrder.sessionOrders = sessionOrders.length > 0 ? sessionOrders : [activeOrder];
+
+    res.json(activeOrder);
+  } catch (err) {
+    console.error('Get active session order error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // GET Single Order Status (Public - for Order Tracking)
 router.get('/status/:id', async (req, res) => {
   try {
@@ -288,7 +343,32 @@ router.get('/status/:id', async (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    res.json(order);
+    // Retrieve all active orders placed in this dining session (last 4 hours) for the same table or phone
+    let relatedOrders = [];
+    const recentWindow = new Date(Date.now() - 4 * 60 * 60 * 1000);
+    
+    let queryConditions = {
+      tenantId: order.tenantId?._id || order.tenantId,
+      status: { $nin: ['cancelled'] },
+      createdAt: { $gte: recentWindow }
+    };
+
+    if (order.tableNumber && order.tableNumber !== 'Takeaway' && order.tableNumber !== 'Counter' && order.tableNumber !== 'Online Order') {
+      queryConditions.tableNumber = order.tableNumber;
+    } else if (order.customerDetails?.phone) {
+      queryConditions['customerDetails.phone'] = order.customerDetails.phone;
+    }
+
+    if (queryConditions.tableNumber || queryConditions['customerDetails.phone']) {
+      relatedOrders = await Order.find(queryConditions)
+        .sort({ createdAt: 1 })
+        .lean();
+    }
+
+    const orderObj = order.toObject ? order.toObject() : order;
+    orderObj.sessionOrders = relatedOrders.length > 0 ? relatedOrders : [orderObj];
+
+    res.json(orderObj);
   } catch (err) {
     console.error("Get order status error:", err);
     res.status(500).json({ error: 'Server error' });
@@ -611,9 +691,9 @@ router.put('/:id/items', auth, async (req, res) => {
       }
     }
 
-    const taxRate = 0.05; // 5% GST
-    const taxAmount = Math.round(subTotal * taxRate * 100) / 100;
-    const total = Math.round((subTotal + taxAmount) * 100) / 100;
+    const taxRate = 0; // Prices are all-inclusive / No extra GST added
+    const taxAmount = 0;
+    const total = Math.round(subTotal * 100) / 100;
 
     order.items = orderItems;
     order.subTotal = subTotal;
