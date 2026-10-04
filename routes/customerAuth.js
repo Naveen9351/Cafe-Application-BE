@@ -134,4 +134,66 @@ router.post('/google-auth', async (req, res) => {
     }
 });
 
+/**
+ * @route   POST /api/customer/update-profile
+ * @desc    Update customer name and synchronize with active orders & Customer DB
+ * @access  Public
+ */
+router.post('/update-profile', async (req, res) => {
+    try {
+        const { phone, name, tenantId, sessionIds, tableNumber } = req.body;
+
+        if (!name || !name.trim()) {
+            return res.status(400).json({ error: 'Customer name is required' });
+        }
+
+        const cleanName = name.trim();
+        const cleanPhone = phone ? phone.replace(/[^0-9]/g, '') : '';
+        const Order = require('../models/Order');
+        const Customer = require('../models/Customer');
+
+        // 1. Update or upsert Customer record if phone and tenantId available
+        if (cleanPhone && tenantId && tenantId !== 'demo-tenant') {
+            try {
+                await Customer.findOneAndUpdate(
+                    { tenantId, phone: cleanPhone },
+                    { $set: { name: cleanName, lastVisit: new Date() } },
+                    { new: true, upsert: true }
+                );
+            } catch (custErr) {
+                console.warn('Customer record update warning:', custErr.message);
+            }
+        }
+
+        // 2. Update active orders for this phone or sessionIds or tableNumber
+        const orderFilters = [];
+        if (cleanPhone) {
+            orderFilters.push({ 'customerDetails.phone': cleanPhone });
+        }
+        if (Array.isArray(sessionIds) && sessionIds.length > 0) {
+            orderFilters.push({ _id: { $in: sessionIds } });
+        }
+        if (tableNumber && tenantId && tenantId !== 'demo-tenant') {
+            orderFilters.push({ tenantId, tableNumber, status: { $in: ['pending', 'confirmed', 'preparing', 'ready'] } });
+        }
+
+        if (orderFilters.length > 0) {
+            await Order.updateMany(
+                { $or: orderFilters },
+                { $set: { 'customerDetails.name': cleanName } }
+            );
+        }
+
+        return res.json({
+            success: true,
+            message: 'Profile name synchronized successfully across orders and KDS',
+            name: cleanName
+        });
+    } catch (err) {
+        console.error('Update profile error:', err);
+        return res.status(500).json({ error: 'Failed to update profile: ' + err.message });
+    }
+});
+
 module.exports = router;
+

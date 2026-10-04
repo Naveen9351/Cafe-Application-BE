@@ -309,10 +309,11 @@ router.get('/active-session', async (req, res) => {
       return res.json(null);
     }
 
-    // Attach all session orders for this dining table
+    // Attach all active/unsettled session orders for this dining table
     const sessionOrders = await Order.find({
       tenantId: activeOrder.tenantId?._id || activeOrder.tenantId,
-      status: { $nin: ['cancelled'] },
+      status: { $in: ['pending', 'confirmed', 'preparing', 'ready'] },
+      paymentStatus: { $ne: 'paid' },
       createdAt: { $gte: recentWindow },
       $or: [
         { tableNumber: activeOrder.tableNumber },
@@ -343,26 +344,42 @@ router.get('/status/:id', async (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    // Retrieve all active orders placed in this dining session (last 4 hours) for the same table or phone
     let relatedOrders = [];
-    const recentWindow = new Date(Date.now() - 4 * 60 * 60 * 1000);
-    
-    let queryConditions = {
-      tenantId: order.tenantId?._id || order.tenantId,
-      status: { $nin: ['cancelled'] },
-      createdAt: { $gte: recentWindow }
-    };
+    const { sessionIds } = req.query;
 
-    if (order.tableNumber && order.tableNumber !== 'Takeaway' && order.tableNumber !== 'Counter' && order.tableNumber !== 'Online Order') {
-      queryConditions.tableNumber = order.tableNumber;
-    } else if (order.customerDetails?.phone) {
-      queryConditions['customerDetails.phone'] = order.customerDetails.phone;
-    }
+    if (sessionIds) {
+      const ids = String(sessionIds)
+        .split(',')
+        .map(s => s.trim())
+        .filter(s => mongoose.Types.ObjectId.isValid(s));
 
-    if (queryConditions.tableNumber || queryConditions['customerDetails.phone']) {
-      relatedOrders = await Order.find(queryConditions)
+      if (ids.length > 0) {
+        relatedOrders = await Order.find({
+          _id: { $in: ids },
+          tenantId: order.tenantId?._id || order.tenantId,
+          status: { $nin: ['cancelled'] }
+        })
         .sort({ createdAt: 1 })
         .lean();
+      }
+    }
+
+    // If no explicit sessionIds provided, check active dining session
+    if (relatedOrders.length === 0) {
+      const isOrderActive = ['pending', 'confirmed', 'preparing', 'ready'].includes(order.status) && order.paymentStatus !== 'paid';
+
+      if (isOrderActive && order.tableNumber && order.tableNumber !== 'Takeaway' && order.tableNumber !== 'Counter' && order.tableNumber !== 'Online Order') {
+        const recentWindow = new Date(Date.now() - 4 * 60 * 60 * 1000);
+        relatedOrders = await Order.find({
+          tenantId: order.tenantId?._id || order.tenantId,
+          tableNumber: order.tableNumber,
+          createdAt: { $gte: recentWindow },
+          status: { $in: ['pending', 'confirmed', 'preparing', 'ready'] },
+          paymentStatus: { $ne: 'paid' }
+        })
+        .sort({ createdAt: 1 })
+        .lean();
+      }
     }
 
     const orderObj = order.toObject ? order.toObject() : order;
@@ -372,6 +389,79 @@ router.get('/status/:id', async (req, res) => {
   } catch (err) {
     console.error("Get order status error:", err);
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET Customer Order History (Public - for customer history modal & page)
+router.get('/history/customer', async (req, res) => {
+  try {
+    const { phone, tenantId, tableNumber, sessionIds } = req.query;
+    
+    const conditions = [];
+
+    // 1. Phone search: check phone with regex matching last 10 digits
+    if (phone) {
+      const cleanPhone = String(phone).replace(/[^0-9]/g, '');
+      if (cleanPhone.length >= 6) {
+        const last10 = cleanPhone.length > 10 ? cleanPhone.slice(-10) : cleanPhone;
+        conditions.push({ 'customerDetails.phone': { $regex: last10, $options: 'i' } });
+        conditions.push({ 'customerDetails.phone': cleanPhone });
+        conditions.push({ 'customerDetails.phone': `+91${last10}` });
+        conditions.push({ 'customerDetails.phone': `+91 ${last10}` });
+      }
+    }
+
+    // 2. Specific Session Order IDs
+    if (sessionIds) {
+      const ids = String(sessionIds)
+        .split(',')
+        .map(s => s.trim())
+        .filter(id => mongoose.Types.ObjectId.isValid(id));
+      if (ids.length > 0) {
+        conditions.push({ _id: { $in: ids } });
+      }
+    }
+
+    // 3. Current Table orders in recent window
+    if (tableNumber && tableNumber !== 'Takeaway' && tableNumber !== 'Counter' && tableNumber !== 'Online Order') {
+      const recentWindow = new Date(Date.now() - 48 * 60 * 60 * 1000);
+      conditions.push({ tableNumber: String(tableNumber), createdAt: { $gte: recentWindow } });
+    }
+
+    if (conditions.length === 0) {
+      return res.json([]);
+    }
+
+    let query = {
+      status: { $nin: ['cancelled'] },
+      $or: conditions
+    };
+
+    // If tenantId provided and valid, filter; otherwise find across orders
+    if (tenantId && mongoose.Types.ObjectId.isValid(tenantId)) {
+      query.tenantId = tenantId;
+    }
+
+    let orders = await Order.find(query)
+      .sort({ createdAt: -1 })
+      .limit(60)
+      .populate('tenantId', 'name address logo')
+      .lean();
+
+    // Fallback: If tenantId was restricted and returned 0, try without tenantId constraint for this customer phone
+    if (orders.length === 0 && phone && query.tenantId) {
+      delete query.tenantId;
+      orders = await Order.find(query)
+        .sort({ createdAt: -1 })
+        .limit(60)
+        .populate('tenantId', 'name address logo')
+        .lean();
+    }
+
+    res.json(orders || []);
+  } catch (err) {
+    console.error('Customer order history fetch error:', err);
+    res.status(500).json({ error: 'Server error: ' + err.message });
   }
 });
 
