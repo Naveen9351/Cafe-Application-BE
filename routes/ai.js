@@ -102,41 +102,45 @@ const validateMenuItem = (item, index) => {
   };
 };
 
-// Sarvam AI Integration Helper
+// Neural AI Integration Helper
 const querySarvam = async (prompt, systemInstruction = "") => {
   const apiKey = process.env.SARVAM_API_KEY;
   if (!apiKey || apiKey === "your_sarvam_api_key_here") return null;
 
-  try {
-    const url = "https://api.sarvam.ai/v1/chat/completions";
-    const messages = [];
-    if (systemInstruction) {
-      messages.push({ role: "system", content: systemInstruction });
-    }
-    messages.push({ role: "user", content: prompt });
+  const models = ["sarvam-105b", "sarvam-30b", "sarvam-2b"];
+  const url = "https://api.sarvam.ai/v1/chat/completions";
 
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "api-subscription-key": apiKey,
-        "Authorization": `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({
-        model: "sarvam-2b",
-        messages
-      })
-    });
+  for (const model of models) {
+    try {
+      const messages = [];
+      const enforcedSystem = (systemInstruction || "You are Khushi AI, the smart restaurant operations manager and sales growth assistant.") + " Always refer to yourself simply as Khushi AI. Never mention underlying model or provider names.";
+      messages.push({ role: "system", content: enforcedSystem });
+      messages.push({ role: "user", content: prompt });
 
-    if (response.ok) {
-      const data = await response.json();
-      return data?.choices?.[0]?.message?.content || null;
-    } else {
-      const errText = await response.text();
-      console.error("Sarvam API Error:", response.status, errText);
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "api-subscription-key": apiKey,
+          "Authorization": `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model,
+          messages
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const content = data?.choices?.[0]?.message?.content;
+        if (content) return content;
+      } else {
+        const errText = await response.text();
+        console.warn(`LLM (${model}) Error:`, response.status, errText);
+      }
+    } catch (err) {
+      console.warn(`LLM (${model}) Fetch Error:`, err.message);
     }
-  } catch (err) {
-    console.error("Sarvam API Fetch Error:", err.message);
   }
   return null;
 };
@@ -220,7 +224,7 @@ const queryGemini = async (prompt, systemInstruction = "") => {
     const pollUrl = 'https://text.pollinations.ai/';
     const pollPayload = {
       messages: [
-        { role: 'system', content: systemInstruction || 'You are Feast AI, an intelligent restaurant copilot assistant. You analyze sales, forecast demand, and advise on kitchen operations.' },
+        { role: 'system', content: systemInstruction || 'You are Khushi AI, an intelligent restaurant store manager and sales growth assistant. Always refer to yourself as Khushi AI.' },
         { role: 'user', content: prompt }
       ],
       model: 'openai'
@@ -243,46 +247,131 @@ const queryGemini = async (prompt, systemInstruction = "") => {
   return null;
 };
 
-// ── 1. INTERNAL AI RESTAURANT COPILOT (TENANT-SPECIFIC LIVE DATA) ──
+// ── 1. INTERNAL AI RESTAURANT ASSISTANT (TENANT-SPECIFIC LIVE DATA) ──
 router.post('/copilot', auth, async (req, res) => {
-  const { query } = req.body;
+  const { query, conversationHistory = [] } = req.body;
+  const mongoose = require('mongoose');
   
   if (!query) {
     return res.status(400).json({ error: "Query is required" });
   }
 
   const normalizedQuery = query.toLowerCase().trim();
+  const tenantId = req.tenantId || req.user?.tenantId || req.body.tenantId;
 
   try {
-    // 1. Gather live tenant data
-    const [menuItems, orders, inventory, tenant] = await Promise.all([
-      MenuItem.find({ tenantId: req.tenantId }),
-      Order.find({ tenantId: req.tenantId }),
-      Inventory.find({ tenantId: req.tenantId }),
-      Tenant.findById(req.tenantId)
+    let tenantQuery = {};
+    if (tenantId) {
+      if (mongoose.Types.ObjectId.isValid(tenantId)) {
+        tenantQuery = { $or: [{ tenantId: tenantId }, { tenantId: new mongoose.Types.ObjectId(tenantId) }] };
+      } else {
+        tenantQuery = { tenantId: tenantId };
+      }
+    }
+
+    // 1. Gather live tenant data with populated menu references
+    const [menuItems, orders, inventory, tenant, khataList] = await Promise.all([
+      MenuItem.find(tenantQuery),
+      Order.find(tenantQuery).populate('items.item').lean(),
+      Inventory.find(tenantQuery),
+      tenantId && mongoose.Types.ObjectId.isValid(tenantId) ? Tenant.findById(tenantId) : Tenant.findOne(tenantQuery),
+      require('../models/KhataRecord').find(tenantQuery).catch(() => [])
     ]);
 
-    const businessName = tenant?.businessName || 'Your Restaurant';
-    const totalRev = orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-    const avgOrderValue = orders.length > 0 ? (totalRev / orders.length) : 0;
-    const lowStockItems = inventory.filter(i => (i.quantity || 0) <= (i.minThreshold || 10));
+    const businessName = tenant?.businessName || tenant?.name || 'Your Restaurant';
+    
+    // Robust Order resolver
+    const getOrderAmount = (ord) => {
+      if (!ord) return 0;
+      const val = Number(ord.settledAmount || ord.finalAmount || ord.totalAmount || ord.total || ord.subTotal || 0);
+      if (!isNaN(val) && val > 0) return val;
+      if (Array.isArray(ord.items) && ord.items.length > 0) {
+        return ord.items.reduce((sum, it) => sum + ((Number(it.price) || (it.item?.price ? Number(it.item.price) : 0)) * (Number(it.quantity) || 1)), 0);
+      }
+      return 0;
+    };
 
-    // Menu summary for LLM context
-    const menuSummary = menuItems.map(m => `${m.name} (₹${m.price}, ${m.category}, ${m.type})`).slice(0, 35).join('; ');
-    const inventorySummary = inventory.map(i => `${i.itemName}: ${i.quantity} ${i.unit}`).slice(0, 30).join('; ');
+    const validOrders = orders.filter(o => o.status !== 'cancelled');
+    const completedOrders = orders.filter(o => o.status === 'completed' || o.status === 'served');
+    const cancelledOrders = orders.filter(o => o.status === 'cancelled');
+    const activeOrders = orders.filter(o => o.status !== 'completed' && o.status !== 'served' && o.status !== 'cancelled');
 
-    const tenantContextPrompt = `You are SERVIQ AI Copilot, the intelligent executive restaurant analyst for ${businessName}.
+    // Revenue calculations
+    const completedRev = completedOrders.reduce((sum, o) => sum + getOrderAmount(o), 0);
+    const totalRev = validOrders.reduce((sum, o) => sum + getOrderAmount(o), 0);
+    const effectiveRev = completedRev > 0 ? completedRev : totalRev;
+    const avgOrderValue = completedOrders.length > 0 ? Math.round(completedRev / completedOrders.length) : (validOrders.length > 0 ? Math.round(totalRev / validOrders.length) : 0);
+    const lowStockItems = inventory.filter(i => (Number(i.quantity) || 0) <= (Number(i.minThreshold) || 10));
+
+    // Khata Dues
+    const pendingKhata = (khataList || []).filter(k => k.status !== 'settled');
+    const totalKhataOutstanding = pendingKhata.reduce((sum, k) => sum + (Number(k.borrowAmount || k.remainingAmount || k.totalBill) || 0), 0);
+
+    // Payment Breakdown
+    const paymentMethods = { Cash: 0, UPI: 0, Card: 0, Khata: 0 };
+    validOrders.forEach(o => {
+      const pm = (o.paymentMethod || 'Cash').toLowerCase();
+      const amt = getOrderAmount(o);
+      if (pm.includes('upi') || pm.includes('gpay')) paymentMethods.UPI += amt;
+      else if (pm.includes('card')) paymentMethods.Card += amt;
+      else if (pm.includes('khata') || pm.includes('borrow')) paymentMethods.Khata += amt;
+      else paymentMethods.Cash += amt;
+    });
+
+    // Top Selling Dishes
+    const dishCounts = {};
+    validOrders.forEach(ord => {
+      (ord.items || []).forEach(it => {
+        const n = it.name || it.item?.name || 'Dish';
+        const q = Number(it.quantity) || 1;
+        const p = Number(it.price) || (it.item?.price ? Number(it.item.price) : 0);
+        if (!dishCounts[n]) dishCounts[n] = { count: 0, revenue: 0 };
+        dishCounts[n].count += q;
+        dishCounts[n].revenue += (q * p);
+      });
+    });
+    const topDishes = Object.entries(dishCounts)
+      .sort((a, b) => b[1].revenue - a[1].revenue)
+      .slice(0, 6)
+      .map(([name, d]) => `${name} (${d.count} sold, ₹${Math.round(d.revenue)})`);
+
+    // Potential Mismatches / Anomaly Checks
+    const anomalies = [];
+    if (totalKhataOutstanding > (effectiveRev * 0.2) && effectiveRev > 0) {
+      anomalies.push(`High Khata Risk: Outstanding debt (₹${Math.round(totalKhataOutstanding)}) exceeds 20% of gross revenue.`);
+    }
+    if (cancelledOrders.length > (orders.length * 0.1) && orders.length > 5) {
+      anomalies.push(`Elevated Cancellation Rate: ${cancelledOrders.length} orders cancelled out of ${orders.length} total.`);
+    }
+    if (lowStockItems.length > 0) {
+      anomalies.push(`${lowStockItems.length} ingredients are below safety reorder threshold.`);
+    }
+
+    const lowStockSummary = lowStockItems.map(i => `${i.itemName}: ${i.quantity} ${i.unit}`).slice(0, 10).join('; ');
+    const menuSummary = menuItems.map(m => {
+      const cat = typeof m.category === 'string' ? m.category : (m.category?.name || 'General');
+      return `${m.name} (₹${m.price || 0}, ${cat})`;
+    }).slice(0, 25).join(', ');
+
+    const tenantContextPrompt = `You are Khushi AI, the dedicated executive restaurant operations manager and sales growth advisor for ${businessName}.
 You have direct real-time access to ${businessName}'s operational database:
-- Active Menu: ${menuItems.length} items registered in total [${menuSummary || 'No items added yet'}]
-- Sales & Volume: ${orders.length} total orders processed, Total Lifetime Revenue: ₹${Math.round(totalRev)}, Average Order Value: ₹${Math.round(avgOrderValue)}
-- Current Inventory: ${inventory.length} raw ingredients tracked [${inventorySummary || 'No inventory logged yet'}], Low Stock Alerts: ${lowStockItems.length} items
+- Active Menu: ${menuItems.length} dishes registered [${menuSummary || 'None'}]
+- Financials:
+  * Total Orders: ${orders.length} (${completedOrders.length} Completed, ${activeOrders.length} In-Kitchen, ${cancelledOrders.length} Cancelled)
+  * Total Settled Revenue: ₹${Math.round(effectiveRev).toLocaleString('en-IN')} (Total Processed: ₹${Math.round(totalRev).toLocaleString('en-IN')})
+  * Average Order Value (AOV): ₹${Math.round(avgOrderValue)}
+- Payment Breakdown: UPI: ₹${Math.round(paymentMethods.UPI)}, Cash: ₹${Math.round(paymentMethods.Cash)}, Card: ₹${Math.round(paymentMethods.Card)}, Khata: ₹${Math.round(paymentMethods.Khata)}
+- Top Dishes: ${topDishes.length > 0 ? topDishes.join(', ') : 'All menu items active for sales'}
+- Khata/Credit Ledger: ${pendingKhata.length} unpaid customer accounts, Total Outstanding Balance: ₹${Math.round(totalKhataOutstanding)}
+- Inventory: ${inventory.length} ingredients tracked, ${lowStockItems.length} items low in stock [${lowStockSummary || 'All stocks normal'}]
+- Detected Operational Anomalies: ${anomalies.length > 0 ? anomalies.join(' | ') : 'All operational metrics within standard parameters'}
 
-Instructions:
-1. Answer the user's questions specifically referencing their live store data (menu items, actual prices, sales totals, inventory levels).
-2. If they ask about menu, list their actual items and prices.
-3. If they ask about sales or cost, give them precise metrics from their numbers.
-4. If they ask about inventory, flag low stock items and give replenishment recommendations.
-5. Provide concise, professional, structured bullet-point responses with emoji indicators.`;
+Formatting & Tone Directives (MANDATORY):
+1. Identity: Always introduce yourself only as "Khushi AI" (never mention engine names, LLM models, version numbers, or internal details).
+2. NO EMOJI ICONS: DO NOT use decorative emojis (such as ✨, 💡, 🎁, 🚀, 📈, ⚠️, 🔍, 🔒, 💰, 👉, etc.) as icons, headers, or bullet prefixes. Keep the output clean, modern, and professional.
+3. Accuracy: Always cite the exact live numbers given above (Total Gross Revenue: ₹${Math.round(effectiveRev).toLocaleString('en-IN')}, AOV: ₹${Math.round(avgOrderValue)}, Total Orders: ${orders.length}, Completed: ${completedOrders.length}). NEVER state that revenue is ₹0 or that there are no sales.
+4. Engaging Strategy: Present sales combos, upsell tactics, and growth levers using clear Markdown tables and bold titles.
+5. Support: If the user asks to report a bug or raise a ticket, guide them to use the "Raise Ticket" tab.`;
 
     let liveReply = await querySarvam(query, tenantContextPrompt);
     
@@ -291,78 +380,279 @@ Instructions:
     }
 
     if (liveReply) {
-      return res.json({ reply: liveReply });
+      // Clean any accidental decorative emojis from LLM output
+      const cleanReply = liveReply.replace(/[✨💡🎁🚀📈⚠️🔍🔒💰👉⭐🚨]/g, '').trim();
+      return res.json({ reply: cleanReply, anomalies });
     }
 
-    // Dynamic Intelligent Fallback using exact tenant data
-    if (['hi', 'hello', 'hey', 'hi there', 'greetings', 'help'].includes(normalizedQuery) || normalizedQuery.includes('who are you') || normalizedQuery.includes('what can you do')) {
-      const reply = `Hello! 👋 I'm **SERVIQ AI Copilot**, your executive operations manager for **${businessName}**.
+    // Dynamic Intelligent Fallback using exact tenant data without emoji icons
+    if (['hi', 'hello', 'hey', 'greetings', 'help'].includes(normalizedQuery) || normalizedQuery.includes('who are you') || normalizedQuery.includes('what can you do')) {
+      const reply = `Hello! I am **Khushi AI**, your smart restaurant growth & operations assistant for **${businessName}**.
 
-Here is your live business summary right now:
-- 📋 **Active Menu:** ${menuItems.length} dishes/beverages registered
-- 📊 **Total Orders:** ${orders.length} orders processed
-- 💰 **Total Revenue:** ₹${totalRev.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-- 📦 **Inventory Status:** ${inventory.length} ingredients tracked (${lowStockItems.length} low-stock alerts)
+### Live Store Snapshot
+| Metric | Current Status |
+|---|---|
+| **Gross Revenue** | ₹${effectiveRev.toLocaleString('en-IN', { minimumFractionDigits: 1 })} (${completedOrders.length} completed orders) |
+| **Average Order Value** | ₹${Math.round(avgOrderValue)} |
+| **Active Menu Dishes** | ${menuItems.length} items |
+| **Low Stock Warnings** | ${lowStockItems.length} items |
+| **Khata Outstanding** | ₹${totalKhataOutstanding.toLocaleString('en-IN')} (${pendingKhata.length} pending) |
 
-What would you like to explore today?
-- *"Show me my menu items and pricing"*
-- *"Analyze my sales & average order value"*
-- *"Which ingredients are low on stock?"*
-- *"Suggest a weekend promotion for my bestsellers"*`;
-      return res.json({ reply });
+How can I help you today?
+- "How can I increase my average order value and daily sales?"
+- "Scan for any data mismatches, unpaid bills, or anomalies"
+- "Give me a summary of my top-selling items and revenue"
+- "Which raw ingredients are below the minimum safety threshold?"`;
+      return res.json({ reply, anomalies });
     }
 
-    if (normalizedQuery.includes('menu') || normalizedQuery.includes('dish') || normalizedQuery.includes('item') || normalizedQuery.includes('price')) {
-      if (menuItems.length === 0) {
-        return res.json({ reply: `You currently have **0 items** in your menu database. You can add items via the Menu tab or use **Import Menu via SERVIQ AI** to scan a paper menu card!` });
-      }
-      const topItems = menuItems.slice(0, 10).map(m => `• **${m.name}** — ₹${m.price} (${m.category})`).join('\n');
-      const reply = `📋 **Menu Summary for ${businessName}** (${menuItems.length} total items):
+    if (normalizedQuery.includes('mismatch') || normalizedQuery.includes('anomaly') || normalizedQuery.includes('issue') || normalizedQuery.includes('bug') || normalizedQuery.includes('check') || normalizedQuery.includes('scan')) {
+      const anomalyList = anomalies.length > 0
+        ? anomalies.map(a => `- **Notice:** ${a}`).join('\n')
+        : `- **Status:** All operations, live order logs, and revenue metrics align with operational thresholds.`;
 
-${topItems}${menuItems.length > 10 ? `\n\n*(+ ${menuItems.length - 10} more items in your catalog)*` : ''}
+      const reply = `### Operational & Data Mismatch Audit for ${businessName}
 
-💡 **AI Pricing Recommendation:** Your average item price is ₹${Math.round(menuItems.reduce((s, i) => s + (i.price || 0), 0) / (menuItems.length || 1))}. Consider pairing high-margin beverages with snacks as dynamic combos to lift ticket sizes.`;
-      return res.json({ reply });
+${anomalyList}
+
+| Metric | Live Audit Data |
+|---|---|
+| **Total Processed Orders** | ${validOrders.length} orders (₹${Math.round(totalRev).toLocaleString('en-IN')}) |
+| **Average Order Value** | ₹${Math.round(avgOrderValue)} |
+| **Active In-Kitchen Orders** | ${activeOrders.length} in progress |
+| **Cancelled Orders** | ${cancelledOrders.length} (${orders.length > 0 ? Math.round((cancelledOrders.length / orders.length) * 100) : 0}% rate) |
+| **Pending Khata Receivables** | ₹${totalKhataOutstanding.toLocaleString('en-IN')} across ${pendingKhata.length} accounts |
+| **Low Stock Warnings** | ${lowStockItems.length} items |
+
+If you notice any system glitch, you can click the "Raise Ticket" tab above to directly alert the Main Platform Admin.`;
+      return res.json({ reply, anomalies });
     }
 
-    if (normalizedQuery.includes('sales') || normalizedQuery.includes('revenue') || normalizedQuery.includes('earn') || normalizedQuery.includes('performance')) {
-      const reply = `📊 **Sales & Revenue Report for ${businessName}**:
-- **Lifetime Gross Revenue:** ₹${Math.round(totalRev).toLocaleString('en-IN')}
-- **Total Orders Logged:** ${orders.length} orders
-- **Average Ticket Size:** ₹${Math.round(avgOrderValue).toLocaleString('en-IN')}
-- 📈 **Traffic Trend:** Highest customer volume typically occurs during lunch (1 PM - 3 PM) and evening dinner (6:30 PM - 9 PM).
-- 💡 **Growth Action:** Launching a digital QR loyalty reward for returning guests can boost weekly repeat frequency by 18%.`;
-      return res.json({ reply });
+    if (normalizedQuery.includes('grow') || normalizedQuery.includes('sales') || normalizedQuery.includes('increase') || normalizedQuery.includes('revenue') || normalizedQuery.includes('profit') || normalizedQuery.includes('aov') || normalizedQuery.includes('order value')) {
+      const topDishName = topDishes.length > 0 ? topDishes[0].split('(')[0].trim() : (menuItems[0]?.name || 'Specialty Dish');
+      const secondDish = menuItems[1]?.name || 'Cold Beverage';
+      const dessertDish = menuItems.find(m => m.name.toLowerCase().includes('cake') || m.name.toLowerCase().includes('dessert') || m.name.toLowerCase().includes('lava'))?.name || 'Chef Dessert';
+
+      const reply = `### Sales Growth & Basket Size Expansion Strategy for ${businessName}
+
+Your current store performance shows **₹${totalRev.toLocaleString('en-IN', { minimumFractionDigits: 1 })}** in gross sales across **${validOrders.length} orders**, with an Average Order Value of **₹${Math.round(avgOrderValue)}**.
+
+### High-Impact Combo Recommendations
+| Combo Bundle | Pairing Items | Strategic Pricing | Est. Ticket Growth |
+|---|---|---|---|
+| **Signature Express Combo** | ${topDishName} + ${secondDish} | 10% Bundle Savings | +18% AOV Boost |
+| **Dine-in Feast Pair** | Gourmet Main + Side + Artisanal Drink | Set Combo Price | +25% Ticket Value |
+| **Sweet Finish Add-on** | Any Coffee + ${dessertDish} | Special Add-on Price | High-margin impulse buy |
+
+### Actionable Growth Levers
+1. **Server Upselling:** Train staff to recommend pairing cold brews or signature sides with main dishes.
+2. **Promote Premium Variations:** Feature premium dish variants at the top of your digital QR menus.
+3. **Happy Hour Timing:** Introduce mid-afternoon combo offers during slow traffic hours (3 PM - 6 PM) to sustain steady revenue.
+4. **Khata Reminders:** Send prompt WhatsApp reminders for pending khata balances (₹${Math.round(totalKhataOutstanding)} total across ${pendingKhata.length} accounts).`;
+      return res.json({ reply, anomalies });
     }
 
-    if (normalizedQuery.includes('inventory') || normalizedQuery.includes('stock') || normalizedQuery.includes('milk') || normalizedQuery.includes('ingredient') || normalizedQuery.includes('po')) {
-      const lowItemsText = lowStockItems.length > 0
-        ? lowStockItems.map(i => `⚠️ **${i.itemName}:** ${i.quantity} ${i.unit} (Threshold: ${i.minThreshold || 10} ${i.unit})`).join('\n')
-        : '✅ All tracked ingredients are currently above minimum safety thresholds.';
+    if (normalizedQuery.includes('menu') || normalizedQuery.includes('dish') || normalizedQuery.includes('item') || normalizedQuery.includes('top-selling') || normalizedQuery.includes('best-seller') || normalizedQuery.includes('summary')) {
+      const topItems = menuItems.slice(0, 8).map(m => `| ${m.name} | ₹${m.price} | ${typeof m.category === 'string' ? m.category : (m.category?.name || 'General')} |`).join('\n');
+      const reply = `### Menu & Sales Summary for ${businessName}
 
-      const reply = `📦 **Inventory & Stock Report for ${businessName}**:
-- **Total Ingredients Monitored:** ${inventory.length} items
-- **Low Stock Warnings (${lowStockItems.length}):**
-${lowItemsText}
+- **Total Gross Sales:** ₹${totalRev.toLocaleString('en-IN', { minimumFractionDigits: 1 })}
+- **Average Order Value:** ₹${Math.round(avgOrderValue)}
+- **Total Orders Logged:** ${validOrders.length}
 
-💡 **Action Required:** Open the Inventory tab to auto-generate and dispatch supplier purchase orders with 1 click.`;
-      return res.json({ reply });
+### Active Menu Catalog Snapshot
+| Dish Name | Price | Category |
+|---|---|---|
+${topItems}
+
+${topDishes.length > 0 ? `### Top Revenue Generators\n` + topDishes.map(d => `- **${d}**`).join('\n') : ''}`;
+      return res.json({ reply, anomalies });
     }
 
-    const reply = `🤖 **SERVIQ AI Copilot for ${businessName}**:
-I have full visibility over your ${menuItems.length} menu items, ${orders.length} orders (₹${Math.round(totalRev)} total volume), and ${inventory.length} inventory lines.
+    if (normalizedQuery.includes('ingredient') || normalizedQuery.includes('stock') || normalizedQuery.includes('safety threshold') || normalizedQuery.includes('inventory')) {
+      const reply = lowStockItems.length > 0
+        ? `### Inventory & Safety Threshold Status for ${businessName}
 
-Try asking:
-- "List my top menu items and prices"
-- "What is my total sales summary?"
-- "Check raw ingredient inventory levels"
-- "Draft a WhatsApp promo message for my customers"`;
+The following **${lowStockItems.length} raw ingredients** are currently at or below their safety reorder threshold:
 
-    return res.json({ reply });
+| Ingredient | Current Stock | Minimum Required | Unit |
+|---|---|---|---|
+${lowStockItems.map(i => `| ${i.itemName} | ${i.quantity} | ${i.minThreshold || 10} | ${i.unit} |`).join('\n')}
+
+Please review your purchase orders to ensure kitchen supplies remain uninterrupted.`
+        : `### Inventory & Safety Threshold Status for ${businessName}
+
+- **Total Ingredients Tracked:** ${inventory.length}
+- **Low Stock Alerts:** 0 items below threshold
+
+All raw material inventory levels are currently within safe operational limits.`;
+      return res.json({ reply, anomalies });
+    }
+
+    const reply = `### Khushi AI for ${businessName}
+I have real-time access to your **${menuItems.length} menu dishes**, **${validOrders.length} orders** (₹${Math.round(totalRev).toLocaleString('en-IN')} gross revenue), and **${inventory.length} inventory items**.
+
+How can I assist you?
+- "How can I increase my average order value and daily sales?"
+- "Scan for any data mismatches, unpaid bills, or anomalies"
+- "Give me a summary of my top-selling items and revenue"
+- "Which raw ingredients are below the minimum safety threshold?"`;
+
+    return res.json({ reply, anomalies });
 
   } catch (err) {
-    console.error("Copilot Error:", err);
+    console.error("AI Assistant Error:", err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ── 1B. EXECUTIVE AI REPORT INSIGHTS (POWERED BY SARVAM LLM) ──
+router.post('/report-insights', auth, async (req, res) => {
+  const tenantId = req.tenantId || req.user?.tenantId;
+  const { timeFilter = 'all' } = req.body;
+
+  try {
+    const [orders, menuItems, inventory, tenant, khataList] = await Promise.all([
+      Order.find({ tenantId }),
+      MenuItem.find({ tenantId }),
+      Inventory.find({ tenantId }),
+      Tenant.findById(tenantId),
+      require('../models/KhataRecord').find({ tenantId }).catch(() => [])
+    ]);
+
+    const businessName = tenant?.businessName || tenant?.name || 'Restaurant';
+    const now = new Date();
+
+    // Time filter logic
+    const filteredOrders = orders.filter(ord => {
+      if (timeFilter === 'all') return true;
+      const ordDate = new Date(ord.createdAt);
+      if (timeFilter === 'today') {
+        return ordDate.toDateString() === now.toDateString();
+      }
+      if (timeFilter === '7d') {
+        const d = new Date();
+        d.setDate(now.getDate() - 7);
+        return ordDate >= d;
+      }
+      if (timeFilter === '30d') {
+        const d = new Date();
+        d.setDate(now.getDate() - 30);
+        return ordDate >= d;
+      }
+      return true;
+    });
+
+    const completedOrders = filteredOrders.filter(o => o.status === 'completed');
+    const cancelledOrders = filteredOrders.filter(o => o.status === 'cancelled');
+
+    const totalGrossRevenue = completedOrders.reduce((sum, o) => {
+      const amt = Number(o.settledAmount || o.finalAmount || o.totalAmount || o.total || 0);
+      return sum + (isNaN(amt) ? 0 : amt);
+    }, 0);
+
+    const avgTicketSize = completedOrders.length > 0 ? Math.round(totalGrossRevenue / completedOrders.length) : 0;
+
+    // Payment distribution
+    const paymentBreakdown = { UPI: 0, Cash: 0, Card: 0, Khata: 0 };
+    completedOrders.forEach(o => {
+      const pm = (o.paymentMethod || 'Cash').toLowerCase();
+      const amt = Number(o.settledAmount || o.finalAmount || o.totalAmount || o.total || 0);
+      if (pm.includes('upi') || pm.includes('gpay')) paymentBreakdown.UPI += amt;
+      else if (pm.includes('card')) paymentBreakdown.Card += amt;
+      else if (pm.includes('khata')) paymentBreakdown.Khata += amt;
+      else paymentBreakdown.Cash += amt;
+    });
+
+    // Dishes performance
+    const dishSales = {};
+    completedOrders.forEach(ord => {
+      (ord.items || []).forEach(it => {
+        const n = it.name || it.item?.name || 'Item';
+        const q = Number(it.quantity) || 1;
+        const p = Number(it.price) || 0;
+        if (!dishSales[n]) dishSales[n] = { name: n, count: 0, revenue: 0 };
+        dishSales[n].count += q;
+        dishSales[n].revenue += (q * p);
+      });
+    });
+
+    const topDishes = Object.values(dishSales).sort((a, b) => b.revenue - a.revenue).slice(0, 5);
+
+    // Khata stats
+    const pendingKhata = (khataList || []).filter(k => k.status !== 'settled');
+    const totalKhataOutstanding = pendingKhata.reduce((acc, k) => acc + (Number(k.borrowAmount || k.remainingAmount || k.totalBill) || 0), 0);
+
+    // Low stock items
+    const lowStockCount = inventory.filter(i => (Number(i.quantity) || 0) <= (Number(i.minThreshold) || 10)).length;
+
+    // AI Prompt for Sarvam LLM
+    const reportPrompt = `You are the Lead Financial Analyst and Operations Director reviewing official business records for ${businessName}.
+Generate a comprehensive, high-level Executive Diagnostic Summary for the executive management report (Time Period: ${timeFilter.toUpperCase()}).
+
+Business Data Metrics:
+- Total Gross Revenue: ₹${Math.round(totalGrossRevenue)}
+- Total Settled Orders: ${completedOrders.length}
+- Average Order Value: ₹${avgTicketSize}
+- Cancelled Orders: ${cancelledOrders.length}
+- Payment Breakdown: UPI: ₹${Math.round(paymentBreakdown.UPI)}, Cash: ₹${Math.round(paymentBreakdown.Cash)}, Card: ₹${Math.round(paymentBreakdown.Card)}, Khata: ₹${Math.round(paymentBreakdown.Khata)}
+- Top Selling Menu Items: ${topDishes.map(d => `${d.name} (${d.count} units, ₹${d.revenue})`).join(', ') || 'No item data'}
+- Khata / Unsettled Credit Balance: ₹${Math.round(totalKhataOutstanding)} (${pendingKhata.length} pending accounts)
+- Low Stock Warnings: ${lowStockCount} raw materials
+
+Generate a structured Executive Diagnostic Summary with the following 4 sections:
+1. 📊 **Executive Performance & Revenue Velocity** (Concise assessment of gross turnover, cash-flow liquidity, and sales trajectory).
+2. 💡 **Revenue Growth & Menu Engineering Strategies** (2-3 concrete actionable opportunities to lift average ticket size and cross-sell bestsellers).
+3. ⚠️ **Risk & Anomaly Observations** (Audit of credit exposure, cancellation rate, or inventory replenishment needs).
+4. 🎯 **Management Next Steps** (Bullet points for store manager / cafe owner to implement immediately).
+
+Write in an authoritative, executive, corporate tone formatted with clear bullet points.`;
+
+    let aiSummary = await querySarvam(reportPrompt, "You are a professional restaurant management & financial analyst writing executive PDF reports.");
+    if (!aiSummary) {
+      aiSummary = await queryGemini(reportPrompt, "You are a professional restaurant management & financial analyst writing executive PDF reports.");
+    }
+
+    if (!aiSummary) {
+      // Dynamic High-Quality Fallback
+      aiSummary = `### 📊 Executive Performance & Revenue Velocity
+- **Gross Revenue Turnover:** ₹${totalGrossRevenue.toLocaleString('en-IN', { minimumFractionDigits: 2 })} settled across ${completedOrders.length} completed transactions with an Average Order Value of ₹${avgTicketSize}.
+- **Liquidity Mix:** Digital UPI accounted for ${totalGrossRevenue > 0 ? Math.round((paymentBreakdown.UPI / totalGrossRevenue) * 100) : 0}% of settled revenue, ensuring instant cash flow and low register leakage.
+
+### 💡 Revenue Growth & Menu Engineering Strategies
+- **Dynamic Combo Bundling:** Leverage high-performing anchor items (${topDishes[0]?.name || 'Top Beverages'}) by pairing with high-margin sides to elevate ticket sizes beyond ₹${avgTicketSize}.
+- **Peak Volume Turnaround:** Implement fast-track prep protocols during lunch (1-3 PM) and evening dinner to optimize seating throughput.
+
+### ⚠️ Risk & Anomaly Observations
+- **Credit Exposure:** ₹${totalKhataOutstanding.toLocaleString('en-IN')} remains outstanding across ${pendingKhata.length} Khata accounts. Routine settlement reminders are recommended.
+- **Supply Assurance:** ${lowStockCount} inventory items require reorder to prevent menu item outages during peak traffic.
+
+### 🎯 Management Next Steps
+- Review low-stock ingredients and trigger auto-purchase orders.
+- Follow up on outstanding Khata ledger dues with 1-click WhatsApp payment reminders.
+- Promote top-selling signature items on the digital QR landing banner.`;
+    }
+
+    res.json({
+      success: true,
+      businessName,
+      timeFilter,
+      metrics: {
+        totalGrossRevenue,
+        totalOrders: completedOrders.length,
+        avgTicketSize,
+        cancelledOrders: cancelledOrders.length,
+        paymentBreakdown,
+        topDishes,
+        outstandingKhata: totalKhataOutstanding,
+        lowStockCount
+      },
+      aiSummary
+    });
+
+  } catch (err) {
+    console.error("Report Insights Error:", err);
+    res.status(500).json({ error: "Failed to generate report insights: " + err.message });
   }
 });
 
