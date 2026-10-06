@@ -12,7 +12,7 @@ const checkRole = require('../middleware/checkRole');
  */
 router.post('/', auth, async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const tenantId = req.user?.tenantId || req.tenantId;
         const { subject, category, description, priority, screenshotUrl, contactEmail, contactPhone } = req.body;
 
         if (!subject || !description) {
@@ -24,7 +24,7 @@ router.post('/', auth, async (req, res) => {
 
         const ticket = new SupportTicket({
             tenantId,
-            tenantName: tenant ? tenant.name : 'Unknown Cafe',
+            tenantName: tenant ? (tenant.businessName || tenant.name) : 'Unknown Cafe',
             ticketNumber,
             subject,
             category: category || 'POS Terminal',
@@ -38,7 +38,7 @@ router.post('/', auth, async (req, res) => {
 
         await ticket.save();
 
-        console.log(`[SUPPORT TICKET] New ticket #${ticketNumber} created by ${tenant?.name || 'Cafe'}`);
+        console.log(`[SUPPORT TICKET] New ticket #${ticketNumber} created by ${tenant?.businessName || tenant?.name || 'Cafe'}`);
         res.status(201).json({ success: true, message: `Ticket #${ticketNumber} raised successfully! Our engineering team will review it.`, ticket });
     } catch (err) {
         console.error('Raise ticket error:', err);
@@ -53,7 +53,7 @@ router.post('/', auth, async (req, res) => {
  */
 router.get('/', auth, async (req, res) => {
     try {
-        const tenantId = req.user.tenantId;
+        const tenantId = req.user?.tenantId || req.tenantId;
         const tickets = await SupportTicket.find({ tenantId }).sort({ createdAt: -1 });
         res.json(tickets);
     } catch (err) {
