@@ -344,9 +344,10 @@ router.get('/status/:id', async (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    let relatedOrders = [];
-    const { sessionIds } = req.query;
+    const orderTenantId = order.tenantId?._id || order.tenantId;
+    const queryConditions = [{ _id: order._id }];
 
+    const { sessionIds } = req.query;
     if (sessionIds) {
       const ids = String(sessionIds)
         .split(',')
@@ -354,33 +355,29 @@ router.get('/status/:id', async (req, res) => {
         .filter(s => mongoose.Types.ObjectId.isValid(s));
 
       if (ids.length > 0) {
-        relatedOrders = await Order.find({
-          _id: { $in: ids },
-          tenantId: order.tenantId?._id || order.tenantId,
-          status: { $nin: ['cancelled'] }
-        })
-        .sort({ createdAt: 1 })
-        .lean();
+        queryConditions.push({ _id: { $in: ids } });
       }
     }
 
-    // If no explicit sessionIds provided, check active dining session
-    if (relatedOrders.length === 0) {
-      const isOrderActive = ['pending', 'confirmed', 'preparing', 'ready'].includes(order.status) && order.paymentStatus !== 'paid';
-
-      if (isOrderActive && order.tableNumber && order.tableNumber !== 'Takeaway' && order.tableNumber !== 'Counter' && order.tableNumber !== 'Online Order') {
-        const recentWindow = new Date(Date.now() - 4 * 60 * 60 * 1000);
-        relatedOrders = await Order.find({
-          tenantId: order.tenantId?._id || order.tenantId,
-          tableNumber: order.tableNumber,
-          createdAt: { $gte: recentWindow },
-          status: { $in: ['pending', 'confirmed', 'preparing', 'ready'] },
-          paymentStatus: { $ne: 'paid' }
-        })
-        .sort({ createdAt: 1 })
-        .lean();
-      }
+    // Automatically find all active un-settled orders for this table in the current dining session
+    if (order.tableNumber && !['Takeaway', 'Counter', 'Online Order', 'Walk-in'].includes(order.tableNumber)) {
+      const recentWindow = new Date(Date.now() - 6 * 60 * 60 * 1000);
+      queryConditions.push({
+        tenantId: orderTenantId,
+        tableNumber: String(order.tableNumber).trim(),
+        createdAt: { $gte: recentWindow },
+        status: { $in: ['pending', 'confirmed', 'preparing', 'ready', 'completed'] },
+        paymentStatus: { $ne: 'paid' }
+      });
     }
+
+    const relatedOrders = await Order.find({
+      $or: queryConditions,
+      tenantId: orderTenantId,
+      status: { $nin: ['cancelled'] }
+    })
+    .sort({ createdAt: 1 })
+    .lean();
 
     const orderObj = order.toObject ? order.toObject() : order;
     orderObj.sessionOrders = relatedOrders.length > 0 ? relatedOrders : [orderObj];
