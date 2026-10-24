@@ -28,10 +28,15 @@ const createLeadHandler = async (req, res) => {
       source
     } = req.body;
 
+    const cleanPhone = String(phone || '').replace(/\D/g, '');
+    if (!cleanPhone || cleanPhone.length !== 10) {
+      return res.status(400).json({ success: false, error: 'Mobile number must be exactly 10 digits' });
+    }
+
     const leadData = {
       fullName: fullName || contactName || name || 'Prospective Partner',
-      workEmail: workEmail || email || (phone ? `${phone}@lead.restaurant` : 'lead@example.com'),
-      phone: phone || 'N/A',
+      workEmail: workEmail || email || `${cleanPhone}@lead.restaurant`,
+      phone: cleanPhone,
       restaurantName: restaurantName || outletName || name || 'Restaurant Outlet',
       outletType: outletType || 'Cafe / Coffee Shop',
       locationsCount: locationsCount || outletCount || '1 outlet',

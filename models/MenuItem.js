@@ -42,7 +42,8 @@ const menuItemSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-// Composite index for uniqueness within a tenant (optional but good practice)
-// menuItemSchema.index({ tenantId: 1, name: 1 }, { unique: true });
+// Composite indexes for fast tenant menu queries
+menuItemSchema.index({ tenantId: 1, isAvailable: 1, category: 1 });
+menuItemSchema.index({ tenantId: 1, name: 1 });
 
-module.exports = mongoose.model('MenuItem', menuItemSchema);
+module.exports = mongoose.model('MenuItem', menuItemSchema);

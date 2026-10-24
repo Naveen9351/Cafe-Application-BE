@@ -49,7 +49,7 @@ router.post(
         return res.status(400).json({ error: 'Invalid credentials' });
       }
 
-      const payload = { id: user._id, role: user.role };
+      const payload = { id: user._id, role: user.role, tenantId: user.tenantId || null };
       const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '30d' });
       res.json({ token });
     } catch (err) {

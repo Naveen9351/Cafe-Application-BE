@@ -21,7 +21,7 @@ router.post('/send-otp', async (req, res) => {
 
         // Clean phone number
         const cleanPhone = phone.replace(/[^0-9]/g, '');
-        if (cleanPhone.length < 10) {
+        if (!/^[0-9]{10}$/.test(cleanPhone)) {
             return res.status(400).json({ error: 'Please enter a valid 10-digit mobile number' });
         }
 
@@ -64,6 +64,9 @@ router.post('/verify-otp', async (req, res) => {
         }
 
         const cleanPhone = phone.replace(/[^0-9]/g, '');
+        if (!/^[0-9]{10}$/.test(cleanPhone)) {
+            return res.status(400).json({ error: 'Please enter a valid 10-digit mobile number' });
+        }
         const record = otpStore.get(cleanPhone);
 
         // Also allow universal master demo OTP '123456' for testing

@@ -26,6 +26,10 @@ router.post('/onboard', [auth, checkRole(['super_admin'])], async (req, res) => 
             return res.status(400).json({ error: 'Business name, email, and password are required' });
         }
 
+        if (phone && !/^[0-9]{10}$/.test(String(phone).trim())) {
+            return res.status(400).json({ error: 'Mobile number must be exactly 10 digits' });
+        }
+
         const existingUser = await User.findOne({ email: email.toLowerCase() });
         if (existingUser) {
             return res.status(400).json({ error: 'User with this email already exists' });
@@ -124,7 +128,13 @@ router.put('/:id', auth, async (req, res) => {
 
         if (name || restaurantName) tenant.name = name || restaurantName;
         if (address || storeAddress) tenant.address = address || storeAddress;
-        if (phone || primaryPhone) tenant.phone = phone || primaryPhone;
+        if (phone || primaryPhone) {
+            const cleanPhone = String(phone || primaryPhone).trim();
+            if (cleanPhone && !/^[0-9]{10}$/.test(cleanPhone)) {
+                return res.status(400).json({ error: 'Mobile number must be exactly 10 digits' });
+            }
+            tenant.phone = cleanPhone;
+        }
         if (email || publicEmail) tenant.email = email || publicEmail;
         if (gstNumber) tenant.gstNumber = gstNumber;
         if (logo) {
@@ -142,6 +152,11 @@ router.put('/:id', auth, async (req, res) => {
             tenant.settings.enableEstimatedPrepTime = Boolean(req.body.enableEstimatedPrepTime);
         } else if (req.body.settings?.enableEstimatedPrepTime !== undefined) {
             tenant.settings.enableEstimatedPrepTime = Boolean(req.body.settings.enableEstimatedPrepTime);
+        }
+        if (req.body.profitMargin !== undefined) {
+            tenant.settings.profitMargin = Number(req.body.profitMargin);
+        } else if (req.body.settings?.profitMargin !== undefined) {
+            tenant.settings.profitMargin = Number(req.body.settings.profitMargin);
         }
         if (req.body.enableKhata !== undefined) {
             tenant.settings.enableKhata = Boolean(req.body.enableKhata);

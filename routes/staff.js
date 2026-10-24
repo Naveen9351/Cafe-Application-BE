@@ -85,6 +85,13 @@ router.post('/', auth, async (req, res) => {
             });
         }
 
+        if (phone && !/^[0-9]{10}$/.test(phone)) {
+            return res.status(400).json({
+                success: false,
+                error: 'Staff mobile number must be exactly 10 digits'
+            });
+        }
+
         const existing = await User.findOne({
             $or: [{ email }, { username: email }]
         }).lean();
@@ -161,7 +168,13 @@ router.put('/:id', auth, async (req, res) => {
             staff.email = email;
             staff.username = email;
         }
-        if (phone !== undefined) staff.phone = phone.trim();
+        if (phone !== undefined) {
+            const clean = phone.trim();
+            if (clean && !/^[0-9]{10}$/.test(clean)) {
+                return res.status(400).json({ success: false, error: 'Staff mobile number must be exactly 10 digits' });
+            }
+            staff.phone = clean;
+        }
         if (password) {
             const salt = await bcrypt.genSalt(10);
             staff.password = await bcrypt.hash(password, salt);

@@ -128,14 +128,11 @@ router.get('/', async (req, res) => {
     
     // Auto-repair items with missing or non-URL images
     const items = rawItems.map(item => {
-      const plain = item.toObject ? item.toObject() : { ...item };
-      const img = plain.image;
-      if (!img || typeof img !== 'string' || (!img.startsWith('http://') && !img.startsWith('https://') && !img.startsWith('/uploads'))) {
-        plain.image = `https://image.pollinations.ai/prompt/delicious%20food%20photo%20of%20${encodeURIComponent(plain.name || 'food')}%20gourmet%20dish?width=500&height=400&nologo=true`;
-        // Background DB fix
-        MenuItem.updateOne({ _id: plain._id }, { image: plain.image }).exec().catch(() => {});
+      if (!item.image || typeof item.image !== 'string' || (!item.image.startsWith('http://') && !item.image.startsWith('https://') && !item.image.startsWith('/uploads'))) {
+        item.image = `https://image.pollinations.ai/prompt/delicious%20food%20photo%20of%20${encodeURIComponent(item.name || 'food')}%20gourmet%20dish?width=500&height=400&nologo=true`;
+        MenuItem.updateOne({ _id: item._id }, { image: item.image }).exec().catch(() => {});
       }
-      return plain;
+      return item;
     });
 
     res.json(items);

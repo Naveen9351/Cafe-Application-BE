@@ -253,12 +253,11 @@ router.post(
 
       await newOrder.save();
 
-      // Deduct inventory stock
-      await deductStockForOrder(newOrder);
+      // Deduct inventory stock asynchronously in background (non-blocking)
+      setImmediate(() => deductStockForOrder(newOrder));
 
-      // Increment Tenant Order Count
-      tenant.subscription.orderCount += 1;
-      await tenant.save();
+      // Increment Tenant Order Count atomically
+      Tenant.updateOne({ _id: tenantId }, { $inc: { 'subscription.orderCount': 1 } }).exec().catch(() => {});
 
       // 4. Emit Socket Event
       if (global.io) {
@@ -308,24 +307,140 @@ router.get('/', auth, async (req, res) => {
       return res.status(400).json({ error: 'Tenant context missing' });
     }
 
-    const { status, range, startDate, endDate } = req.query;
+    const { 
+      status, 
+      paymentStatus, 
+      paymentMethod, 
+      table, 
+      search, 
+      sortBy, 
+      range, 
+      startDate, 
+      endDate, 
+      paginate, 
+      page, 
+      limit 
+    } = req.query;
+
     let query = {};
     if (tenantId) query.tenantId = tenantId;
-    if (status) query.status = status;
+
+    // Status Filter
+    if (status && status !== 'all') {
+      query.status = status;
+    }
+
+    // Payment Status Filter
+    if (paymentStatus && paymentStatus !== 'all') {
+      if (paymentStatus === 'paid') {
+        query.paymentStatus = 'paid';
+      } else if (paymentStatus === 'unpaid') {
+        query.paymentStatus = { $in: ['unpaid', 'pending', null] };
+      } else {
+        query.paymentStatus = paymentStatus;
+      }
+    }
+
+    // Payment Method Filter
+    if (paymentMethod && paymentMethod !== 'all') {
+      query.paymentMethod = { $regex: new RegExp(paymentMethod, 'i') };
+    }
+
+    // Table Filter
+    if (table && table !== 'all') {
+      const cleanTbl = String(table).replace(/^Table\s*/i, '').trim();
+      const escapedTbl = cleanTbl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      query.$or = [
+        { tableNumber: cleanTbl },
+        { tableNumber: { $regex: new RegExp(`^Table\\s*${escapedTbl}$`, 'i') } },
+        { table: cleanTbl }
+      ];
+    }
+
+    // Search Query (Order #, Name, Mobile Number, Table)
+    if (search && String(search).trim()) {
+      const q = String(search).trim();
+      const escapedQ = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const numOnly = q.replace(/\D/g, '');
+
+      const searchOr = [
+        { orderNumber: { $regex: escapedQ, $options: 'i' } },
+        { 'customerDetails.name': { $regex: escapedQ, $options: 'i' } },
+        { 'customerDetails.phone': { $regex: escapedQ, $options: 'i' } },
+        { customerName: { $regex: escapedQ, $options: 'i' } },
+        { customerPhone: { $regex: escapedQ, $options: 'i' } },
+        { tableNumber: { $regex: escapedQ, $options: 'i' } }
+      ];
+
+      if (numOnly && numOnly.length >= 3) {
+        searchOr.push({ 'customerDetails.phone': { $regex: numOnly } });
+        searchOr.push({ customerPhone: { $regex: numOnly } });
+      }
+
+      if (mongoose.Types.ObjectId.isValid(q)) {
+        searchOr.push({ _id: new mongoose.Types.ObjectId(q) });
+      }
+
+      if (query.$or) {
+        query.$and = [
+          { $or: query.$or },
+          { $or: searchOr }
+        ];
+        delete query.$or;
+      } else {
+        query.$or = searchOr;
+      }
+    }
 
     // Apply Date Range Filter
     const dateFilter = getDateRangeFilter(range, startDate, endDate);
-    query = { ...query, ...dateFilter };
+    if (dateFilter.createdAt) {
+      query.createdAt = dateFilter.createdAt;
+    }
 
+    // Sort Options
+    let sortOptions = { createdAt: -1 };
+    if (sortBy === 'oldest') {
+      sortOptions = { createdAt: 1 };
+    } else if (sortBy === 'highest_amount') {
+      sortOptions = { total: -1, totalAmount: -1, createdAt: -1 };
+    } else if (sortBy === 'lowest_amount') {
+      sortOptions = { total: 1, totalAmount: 1, createdAt: -1 };
+    }
+
+    // Paginated response if paginate=true or page is specified
+    const isPaginated = paginate === 'true' || page !== undefined;
+    if (isPaginated) {
+      const pageNum = Math.max(1, parseInt(page, 10) || 1);
+      const limitNum = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
+
+      const total = await Order.countDocuments(query);
+      const orders = await Order.find(query)
+        .sort(sortOptions)
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum)
+        .lean();
+
+      return res.json({
+        orders,
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum) || 1
+      });
+    }
+
+    // Non-paginated fallback for legacy callers (AdminPanel live feed, POS, etc.)
+    const maxLimit = limit === 'all' ? 5000 : (parseInt(limit, 10) || 500);
     const orders = await Order.find(query)
-      .sort({ createdAt: -1 })
-      .limit(200)
+      .sort(sortOptions)
+      .limit(maxLimit)
       .lean();
 
     res.json(orders);
   } catch (err) {
     console.error('Get orders error:', err);
-    res.status(500).json({ error: 'Server error' });
+    res.status(500).json({ error: 'Server error: ' + err.message });
   }
 });
 

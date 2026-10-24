@@ -20,7 +20,7 @@ router.get('/', async (req, res) => {
     }
 
     const filter = tenantId ? { tenantId } : {};
-    let tables = await Table.find(filter).sort({ tableNumber: 1 }).lean();
+    let tables = await Table.find(filter).sort({ createdAt: 1, _id: 1 }).lean();
 
     if (tenantId && tables.length === 0) {
       const initialTables = [
@@ -59,10 +59,13 @@ router.post('/', [auth, checkRole(['admin', 'super_admin'])], async (req, res) =
 
     const cleanTableNumber = String(tableNumber).trim();
 
-    // Check for duplicate table number within the same tenant
-    const existing = await Table.findOne({ tenantId, tableNumber: cleanTableNumber });
+    // Check for duplicate table number within the same tenant (case-insensitive)
+    const existing = await Table.findOne({
+      tenantId,
+      tableNumber: { $regex: new RegExp(`^${cleanTableNumber.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
+    });
     if (existing) {
-      return res.status(400).json({ error: `Table ${cleanTableNumber} already exists` });
+      return res.status(400).json({ error: `Table "${cleanTableNumber}" already exists` });
     }
 
     const newTable = new Table({
@@ -90,15 +93,34 @@ router.put('/:id', [auth, checkRole(['admin', 'super_admin'])], async (req, res)
       return res.status(400).json({ error: 'Invalid Table ID' });
     }
 
-    const updateData = {};
-    if (tableNumber !== undefined) updateData.tableNumber = String(tableNumber).trim();
-    if (seatingCapacity !== undefined) updateData.seatingCapacity = Number(seatingCapacity);
-    if (status !== undefined) updateData.status = status;
-
     const filter = { _id: req.params.id };
     if (req.user.role !== 'super_admin') {
       filter.tenantId = tenantId;
     }
+
+    const updateData = {};
+    if (tableNumber !== undefined) {
+      const cleanTableNumber = String(tableNumber).trim();
+      if (!cleanTableNumber) {
+        return res.status(400).json({ error: 'Table number is required' });
+      }
+
+      // Check for duplicate table number within the same tenant
+      const duplicate = await Table.findOne({
+        tenantId: filter.tenantId || tenantId,
+        tableNumber: { $regex: new RegExp(`^${cleanTableNumber.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+        _id: { $ne: req.params.id }
+      });
+
+      if (duplicate) {
+        return res.status(400).json({ error: `Table "${cleanTableNumber}" already exists` });
+      }
+
+      updateData.tableNumber = cleanTableNumber;
+    }
+
+    if (seatingCapacity !== undefined) updateData.seatingCapacity = Number(seatingCapacity);
+    if (status !== undefined) updateData.status = status;
 
     const updatedTable = await Table.findOneAndUpdate(filter, updateData, { new: true });
     if (!updatedTable) {
@@ -108,7 +130,7 @@ router.put('/:id', [auth, checkRole(['admin', 'super_admin'])], async (req, res)
     res.json(updatedTable);
   } catch (err) {
     console.error('Update table error:', err);
-    res.status(500).json({ error: 'Failed to update table' });
+    res.status(500).json({ error: 'Failed to update table: ' + err.message });
   }
 });
 
