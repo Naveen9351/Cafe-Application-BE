@@ -178,6 +178,10 @@ router.post(
           const itemTotal = (basePrice + addonsTotal) * quantity;
           subTotal += itemTotal;
 
+          const isItemDirect = Boolean(req.body.isDirect || clientItem.isDirect);
+          const itemStatus = isItemDirect ? 'served' : (status === 'preparing' ? 'preparing' : (clientItem.itemStatus || 'pending'));
+          const itemIsPaid = Boolean(clientItem.isPaid || paymentStatus === 'paid');
+
           orderItems.push({
             item: dbItem._id,
             name: dbItem.name,
@@ -185,7 +189,12 @@ router.post(
             price: basePrice + addonsTotal,
             variant: selectedVariant,
             addons: selectedAddons,
-            specialNotes: clientItem.specialNotes || clientItem.notes || ''
+            specialNotes: clientItem.specialNotes || clientItem.notes || '',
+            itemStatus,
+            isPaid: itemIsPaid,
+            paidAt: itemIsPaid ? new Date() : null,
+            itemPaymentMethod: clientItem.itemPaymentMethod || req.body.paymentMethod || null,
+            isDirect: isItemDirect
           });
         }
       }
@@ -232,6 +241,10 @@ router.post(
         }
       }
 
+      const initialPaidAmount = orderItems.reduce((acc, it) => it.isPaid ? acc + (Number(it.price) * (Number(it.quantity) || 1)) : acc, 0);
+      let calculatedPaymentStatus = paymentStatus || (initialPaidAmount >= total && total > 0 ? 'paid' : (initialPaidAmount > 0 ? 'partial' : 'pending'));
+      const finalStatus = req.body.isDirect ? 'served' : (status || 'pending');
+
       // 3. Create Order
       const newOrder = new Order({
         tenantId,
@@ -241,12 +254,13 @@ router.post(
         subTotal,
         taxAmount,
         total,
-        settledAmount: req.body.settledAmount !== undefined ? Number(req.body.settledAmount) : (paymentStatus === 'paid' ? total : undefined),
+        paidAmount: initialPaidAmount,
+        settledAmount: req.body.settledAmount !== undefined ? Number(req.body.settledAmount) : (calculatedPaymentStatus === 'paid' ? total : undefined),
         paymentMethod: req.body.paymentMethod || 'UPI',
         orderType: req.body.orderType || (tableNumber === 'Takeaway' || tableNumber === 'Counter' ? 'takeaway' : 'dine_in'),
         customerDetails: customerDetails || {},
-        status: status || 'pending',
-        paymentStatus: paymentStatus || 'pending',
+        status: finalStatus,
+        paymentStatus: calculatedPaymentStatus,
         loyaltyPointsEarned: pointsEarned,
         estimatedTime: req.body.estimatedTime ? Number(req.body.estimatedTime) : null
       });
@@ -715,6 +729,79 @@ router.put('/:id/status', auth, async (req, res) => {
   }
 });
 
+// MARK SPECIFIC OR ALL ITEMS AS PAID FOR A TABLE
+router.put('/table/:tableNumber/pay-items', auth, async (req, res) => {
+  try {
+    const rawTable = String(req.params.tableNumber).trim();
+    const numOnly = rawTable.replace(/[^0-9]/g, '') || rawTable;
+    const { paymentMethod = 'Cash', itemsToPay = [], payAll = false } = req.body;
+
+    let tenantId = req.user.tenantId;
+    if (req.user.role === 'super_admin' && req.body.tenantId) {
+      tenantId = req.body.tenantId;
+    }
+
+    const tablePattern = new RegExp(`^(${rawTable}|Table ${numOnly}|table-${numOnly}|${numOnly})$`, 'i');
+    const query = {
+      status: { $nin: ['completed', 'cancelled'] },
+      tableNumber: { $regex: tablePattern }
+    };
+    if (tenantId) query.tenantId = tenantId;
+
+    const activeOrders = await Order.find(query);
+    if (!activeOrders || activeOrders.length === 0) {
+      return res.status(404).json({ error: `No active orders found for Table ${rawTable}` });
+    }
+
+    const updatedOrders = [];
+    let totalNewlyPaid = 0;
+
+    for (const ord of activeOrders) {
+      let orderModified = false;
+
+      ord.items.forEach((it, idx) => {
+        const shouldPay = payAll || itemsToPay.some(target => 
+          String(target.orderId) === String(ord._id) && Number(target.itemIndex) === idx
+        );
+
+        if (shouldPay && !it.isPaid) {
+          it.isPaid = true;
+          it.paidAt = new Date();
+          it.itemPaymentMethod = paymentMethod;
+          orderModified = true;
+          totalNewlyPaid += (Number(it.price) * (Number(it.quantity) || 1));
+        }
+      });
+
+      if (orderModified) {
+        const allItemsPaid = ord.items.every(it => it.isPaid);
+        const someItemsPaid = ord.items.some(it => it.isPaid);
+
+        ord.paymentStatus = allItemsPaid ? 'paid' : (someItemsPaid ? 'partial' : 'pending');
+        ord.paidAmount = ord.items.reduce((sum, it) => it.isPaid ? sum + (Number(it.price) * (Number(it.quantity) || 1)) : sum, 0);
+        if (paymentMethod) ord.paymentMethod = paymentMethod;
+
+        await ord.save();
+        updatedOrders.push(ord);
+
+        if (global.io && ord.tenantId) {
+          global.io.to(ord.tenantId.toString()).emit('orderUpdate', ord);
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Marked items as paid for Table ${rawTable}`,
+      totalNewlyPaid,
+      updatedOrders
+    });
+  } catch (err) {
+    console.error('Table pay items error:', err);
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
 // SETTLE ALL ACTIVE ORDERS FOR A TABLE (Table Batch Settle & Free Table, with Merged Tables & Actual Amount support)
 router.put('/table/:tableNumber/settle', auth, async (req, res) => {
   try {
@@ -762,6 +849,15 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
       ord.status = 'completed';
       ord.paymentStatus = paymentStatus || 'paid';
       if (paymentMethod) ord.paymentMethod = paymentMethod;
+
+      // Mark all items as paid and served
+      ord.items.forEach(it => {
+        it.isPaid = true;
+        if (!it.paidAt) it.paidAt = new Date();
+        if (!it.itemPaymentMethod && paymentMethod) it.itemPaymentMethod = paymentMethod;
+        if (it.itemStatus !== 'served') it.itemStatus = 'served';
+      });
+      ord.paidAmount = ord.total;
 
       // Store actual settled amount separately from original total
       if (actualSettledAmt !== null) {

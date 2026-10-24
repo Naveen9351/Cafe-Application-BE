@@ -11,9 +11,10 @@ const dns = require('dns');
 // Load env vars
 dotenv.config();
 
-// Optimize DNS lookup order for ultra-low latency (prefer IPv4)
+// Optimize DNS lookup order and configure reliable DNS servers (fixes querySrv ECONNREFUSED on Windows/ISPs)
 try {
   dns.setDefaultResultOrder('ipv4first');
+  dns.setServers(['8.8.8.8', '8.8.4.4', '1.1.1.1']);
 } catch (err) {
   // Ignore if unsupported in older Node versions
 }

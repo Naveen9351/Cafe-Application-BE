@@ -35,7 +35,16 @@ const orderSchema = new mongoose.Schema({
         }
       ],
       specialNotes: { type: String, default: '' },
-      notes: { type: String, default: '' }
+      notes: { type: String, default: '' },
+      itemStatus: {
+        type: String,
+        enum: ['pending', 'preparing', 'ready', 'served'],
+        default: 'preparing'
+      },
+      isPaid: { type: Boolean, default: false },
+      paidAt: { type: Date },
+      itemPaymentMethod: { type: String },
+      isDirect: { type: Boolean, default: false }
     }
   ],
 
@@ -44,11 +53,12 @@ const orderSchema = new mongoose.Schema({
   taxAmount: { type: Number, default: 0 },
   total: { type: Number, required: true },
   settledAmount: { type: Number },
+  paidAmount: { type: Number, default: 0 },
   paymentMethod: { type: String, default: 'UPI' },
 
   status: {
     type: String,
-    enum: ['pending', 'confirmed', 'preparing', 'ready', 'completed', 'cancelled'],
+    enum: ['pending', 'confirmed', 'preparing', 'ready', 'served', 'completed', 'cancelled'],
     default: 'pending',
     index: true
   },
