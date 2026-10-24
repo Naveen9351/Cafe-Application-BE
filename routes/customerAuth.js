@@ -106,16 +106,106 @@ router.post('/verify-otp', async (req, res) => {
 });
 
 /**
+ * @route   POST /api/customer/quick-verify
+ * @desc    Direct zero-cost customer verification for Dine-In orders (No paid SMS OTP required)
+ * @access  Public
+ */
+router.post('/quick-verify', async (req, res) => {
+    try {
+        const { name, phone, tenantId } = req.body;
+
+        if (!name || !name.trim()) {
+            return res.status(400).json({ error: 'Please enter your name' });
+        }
+
+        const cleanPhone = (phone || '').replace(/[^0-9]/g, '');
+        if (cleanPhone.length < 10) {
+            return res.status(400).json({ error: 'Please enter a valid 10-digit mobile number' });
+        }
+
+        const cleanName = name.trim();
+        const Customer = require('../models/Customer');
+
+        // Upsert customer record if tenantId is available
+        if (cleanPhone && tenantId && tenantId !== 'demo-tenant') {
+            try {
+                await Customer.findOneAndUpdate(
+                    { tenantId, phone: cleanPhone },
+                    { $set: { name: cleanName, isPhoneVerified: true, lastVisit: new Date() } },
+                    { new: true, upsert: true }
+                );
+            } catch (dbErr) {
+                console.warn('Customer upsert note:', dbErr.message);
+            }
+        }
+
+        return res.json({
+            success: true,
+            verified: true,
+            customer: {
+                name: cleanName,
+                phone: cleanPhone,
+                authProvider: 'instant_verified',
+                verifiedAt: new Date()
+            }
+        });
+    } catch (err) {
+        console.error('Quick verify error:', err);
+        return res.status(500).json({ error: 'Verification failed: ' + err.message });
+    }
+});
+
+/**
  * @route   POST /api/customer/google-auth
  * @desc    Verify and authenticate customer via Google OAuth / One-Tap
  * @access  Public
  */
 router.post('/google-auth', async (req, res) => {
     try {
-        const { name, email, googleId, picture } = req.body;
+        let { name, email, googleId, picture, accessToken, credential, phone } = req.body;
+
+        // 1. If accessToken provided, fetch user profile securely on server (bypasses browser CORS & ad-blockers)
+        if (accessToken && !email) {
+            try {
+                const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+                    headers: { Authorization: `Bearer ${accessToken}` }
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data?.email) {
+                        email = data.email;
+                        name = data.name || name || data.email.split('@')[0];
+                        picture = data.picture || picture || '';
+                        googleId = data.sub || googleId || '';
+                    }
+                } else {
+                    console.warn('Google userinfo fetch returned status:', response.status);
+                }
+            } catch (fetchErr) {
+                console.error('Server-side Google userinfo fetch failed:', fetchErr.message);
+            }
+        }
+
+        // 2. If credential (JWT) provided, parse payload
+        if (credential && !email) {
+            try {
+                const parts = credential.split('.');
+                if (parts.length === 3) {
+                    const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+                    if (payload?.email) {
+                        email = payload.email;
+                        name = payload.name || name || payload.email.split('@')[0];
+                        picture = payload.picture || picture || '';
+                        googleId = payload.sub || googleId || '';
+                    }
+                }
+            } catch (jwtErr) {
+                console.error('JWT parse error:', jwtErr.message);
+            }
+        }
 
         if (!email) {
-            return res.status(400).json({ error: 'Google email is required' });
+            return res.status(400).json({ error: 'Unable to retrieve Google email. Please enter details manually or try again.' });
         }
 
         return res.json({
@@ -124,7 +214,7 @@ router.post('/google-auth', async (req, res) => {
             customer: {
                 name: name || email.split('@')[0],
                 email: email.toLowerCase(),
-                phone: req.body.phone || '',
+                phone: phone || '',
                 picture: picture || '',
                 googleId: googleId || '',
                 authProvider: 'google',
@@ -137,4 +227,66 @@ router.post('/google-auth', async (req, res) => {
     }
 });
 
+/**
+ * @route   POST /api/customer/update-profile
+ * @desc    Update customer name and synchronize with active orders & Customer DB
+ * @access  Public
+ */
+router.post('/update-profile', async (req, res) => {
+    try {
+        const { phone, name, tenantId, sessionIds, tableNumber } = req.body;
+
+        if (!name || !name.trim()) {
+            return res.status(400).json({ error: 'Customer name is required' });
+        }
+
+        const cleanName = name.trim();
+        const cleanPhone = phone ? phone.replace(/[^0-9]/g, '') : '';
+        const Order = require('../models/Order');
+        const Customer = require('../models/Customer');
+
+        // 1. Update or upsert Customer record if phone and tenantId available
+        if (cleanPhone && tenantId && tenantId !== 'demo-tenant') {
+            try {
+                await Customer.findOneAndUpdate(
+                    { tenantId, phone: cleanPhone },
+                    { $set: { name: cleanName, lastVisit: new Date() } },
+                    { new: true, upsert: true }
+                );
+            } catch (custErr) {
+                console.warn('Customer record update warning:', custErr.message);
+            }
+        }
+
+        // 2. Update active orders for this phone or sessionIds or tableNumber
+        const orderFilters = [];
+        if (cleanPhone) {
+            orderFilters.push({ 'customerDetails.phone': cleanPhone });
+        }
+        if (Array.isArray(sessionIds) && sessionIds.length > 0) {
+            orderFilters.push({ _id: { $in: sessionIds } });
+        }
+        if (tableNumber && tenantId && tenantId !== 'demo-tenant') {
+            orderFilters.push({ tenantId, tableNumber, status: { $in: ['pending', 'confirmed', 'preparing', 'ready'] } });
+        }
+
+        if (orderFilters.length > 0) {
+            await Order.updateMany(
+                { $or: orderFilters },
+                { $set: { 'customerDetails.name': cleanName } }
+            );
+        }
+
+        return res.json({
+            success: true,
+            message: 'Profile name synchronized successfully across orders and KDS',
+            name: cleanName
+        });
+    } catch (err) {
+        console.error('Update profile error:', err);
+        return res.status(500).json({ error: 'Failed to update profile: ' + err.message });
+    }
+});
+
 module.exports = router;
+

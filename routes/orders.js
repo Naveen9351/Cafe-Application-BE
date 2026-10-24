@@ -190,9 +190,9 @@ router.post(
         }
       }
 
-      const taxRate = 0.05; // 5% GST
-      const taxAmount = Math.round(subTotal * taxRate * 100) / 100;
-      const total = Math.round((subTotal + taxAmount) * 100) / 100;
+      const taxRate = 0; // Prices are all-inclusive / No extra GST added
+      const taxAmount = 0;
+      const total = Math.round(subTotal * 100) / 100;
 
       // Calculate loyalty points (5% cashback)
       const pointsEarned = Math.round(subTotal * 0.05);
@@ -273,6 +273,62 @@ router.post(
   }
 );
 
+// GET Active Order for Table/Phone (Public - for Customer Menu Dashboard)
+router.get('/active-session', async (req, res) => {
+  try {
+    const { tableNumber, tenantId, phone } = req.query;
+    if (!tableNumber && !phone) {
+      return res.json(null);
+    }
+
+    const recentWindow = new Date(Date.now() - 4 * 60 * 60 * 1000);
+    let queryConditions = {
+      status: { $in: ['pending', 'confirmed', 'preparing', 'ready'] },
+      createdAt: { $gte: recentWindow }
+    };
+
+    if (tenantId) {
+      queryConditions.tenantId = tenantId;
+    }
+
+    if (tableNumber && tableNumber !== 'Takeaway' && tableNumber !== 'Counter' && tableNumber !== 'Online Order') {
+      queryConditions.tableNumber = tableNumber;
+    } else if (phone) {
+      queryConditions['customerDetails.phone'] = phone;
+    } else {
+      return res.json(null);
+    }
+
+    const activeOrder = await Order.findOne(queryConditions)
+      .sort({ createdAt: -1 })
+      .populate('tenantId', 'name address phone settings')
+      .lean();
+
+    if (!activeOrder) {
+      return res.json(null);
+    }
+
+    // Attach all active/unsettled session orders for this dining table
+    const sessionOrders = await Order.find({
+      tenantId: activeOrder.tenantId?._id || activeOrder.tenantId,
+      status: { $in: ['pending', 'confirmed', 'preparing', 'ready'] },
+      paymentStatus: { $ne: 'paid' },
+      createdAt: { $gte: recentWindow },
+      $or: [
+        { tableNumber: activeOrder.tableNumber },
+        { 'customerDetails.phone': activeOrder.customerDetails?.phone }
+      ]
+    }).sort({ createdAt: 1 }).lean();
+
+    activeOrder.sessionOrders = sessionOrders.length > 0 ? sessionOrders : [activeOrder];
+
+    res.json(activeOrder);
+  } catch (err) {
+    console.error('Get active session order error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // GET Single Order Status (Public - for Order Tracking)
 router.get('/status/:id', async (req, res) => {
   try {
@@ -287,10 +343,121 @@ router.get('/status/:id', async (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
 
-    res.json(order);
+    const orderTenantId = order.tenantId?._id || order.tenantId;
+    const queryConditions = [{ _id: order._id }];
+
+    const { sessionIds } = req.query;
+    if (sessionIds) {
+      const ids = String(sessionIds)
+        .split(',')
+        .map(s => s.trim())
+        .filter(s => mongoose.Types.ObjectId.isValid(s));
+
+      if (ids.length > 0) {
+        queryConditions.push({ _id: { $in: ids } });
+      }
+    }
+
+    // Automatically find all active un-settled orders for this table in the current dining session
+    if (order.tableNumber && !['Takeaway', 'Counter', 'Online Order', 'Walk-in'].includes(order.tableNumber)) {
+      const recentWindow = new Date(Date.now() - 6 * 60 * 60 * 1000);
+      queryConditions.push({
+        tenantId: orderTenantId,
+        tableNumber: String(order.tableNumber).trim(),
+        createdAt: { $gte: recentWindow },
+        status: { $in: ['pending', 'confirmed', 'preparing', 'ready', 'completed'] },
+        paymentStatus: { $ne: 'paid' }
+      });
+    }
+
+    const relatedOrders = await Order.find({
+      $or: queryConditions,
+      tenantId: orderTenantId,
+      status: { $nin: ['cancelled'] }
+    })
+    .sort({ createdAt: 1 })
+    .lean();
+
+    const orderObj = order.toObject ? order.toObject() : order;
+    orderObj.sessionOrders = relatedOrders.length > 0 ? relatedOrders : [orderObj];
+
+    res.json(orderObj);
   } catch (err) {
     console.error("Get order status error:", err);
     res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// GET Customer Order History (Public - for customer history modal & page)
+router.get('/history/customer', async (req, res) => {
+  try {
+    const { phone, tenantId, tableNumber, sessionIds } = req.query;
+    
+    const conditions = [];
+
+    // 1. Phone search: check phone with regex matching last 10 digits
+    if (phone) {
+      const cleanPhone = String(phone).replace(/[^0-9]/g, '');
+      if (cleanPhone.length >= 6) {
+        const last10 = cleanPhone.length > 10 ? cleanPhone.slice(-10) : cleanPhone;
+        conditions.push({ 'customerDetails.phone': { $regex: last10, $options: 'i' } });
+        conditions.push({ 'customerDetails.phone': cleanPhone });
+        conditions.push({ 'customerDetails.phone': `+91${last10}` });
+        conditions.push({ 'customerDetails.phone': `+91 ${last10}` });
+      }
+    }
+
+    // 2. Specific Session Order IDs
+    if (sessionIds) {
+      const ids = String(sessionIds)
+        .split(',')
+        .map(s => s.trim())
+        .filter(id => mongoose.Types.ObjectId.isValid(id));
+      if (ids.length > 0) {
+        conditions.push({ _id: { $in: ids } });
+      }
+    }
+
+    // 3. Current Table orders in recent window
+    if (tableNumber && tableNumber !== 'Takeaway' && tableNumber !== 'Counter' && tableNumber !== 'Online Order') {
+      const recentWindow = new Date(Date.now() - 48 * 60 * 60 * 1000);
+      conditions.push({ tableNumber: String(tableNumber), createdAt: { $gte: recentWindow } });
+    }
+
+    if (conditions.length === 0) {
+      return res.json([]);
+    }
+
+    let query = {
+      status: { $nin: ['cancelled'] },
+      $or: conditions
+    };
+
+    // If tenantId provided and valid, filter; otherwise find across orders
+    if (tenantId && mongoose.Types.ObjectId.isValid(tenantId)) {
+      query.tenantId = tenantId;
+    }
+
+    let orders = await Order.find(query)
+      .sort({ createdAt: -1 })
+      .limit(60)
+      .populate('tenantId', 'name address logo')
+      .lean();
+
+    // Fallback: If tenantId was restricted and returned 0, try without tenantId constraint for this customer phone
+    if (orders.length === 0 && phone && query.tenantId) {
+      delete query.tenantId;
+      orders = await Order.find(query)
+        .sort({ createdAt: -1 })
+        .limit(60)
+        .populate('tenantId', 'name address logo')
+        .lean();
+    }
+
+    res.json(orders || []);
+  } catch (err) {
+    console.error('Customer order history fetch error:', err);
+    res.status(500).json({ error: 'Server error: ' + err.message });
   }
 });
 
@@ -726,9 +893,9 @@ router.put('/:id/items', auth, async (req, res) => {
       }
     }
 
-    const taxRate = 0.05; // 5% GST
-    const taxAmount = Math.round(subTotal * taxRate * 100) / 100;
-    const total = Math.round((subTotal + taxAmount) * 100) / 100;
+    const taxRate = 0; // Prices are all-inclusive / No extra GST added
+    const taxAmount = 0;
+    const total = Math.round(subTotal * 100) / 100;
 
     order.items = orderItems;
     order.subTotal = subTotal;

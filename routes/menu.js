@@ -135,7 +135,20 @@ router.get('/', async (req, res) => {
       return item;
     });
 
-    res.json(items);
+    // Deduplicate items so identical dishes (by id or name+category) are never returned multiple times
+    const seen = new Set();
+    const uniqueItems = [];
+    for (const item of items) {
+      const idKey = String(item._id || item.id || '');
+      const nameCatKey = `${String(item.name || '').toLowerCase().trim()}__${String(item.category || '').toLowerCase().trim()}`;
+      if (idKey && seen.has(idKey)) continue;
+      if (nameCatKey && seen.has(nameCatKey)) continue;
+      if (idKey) seen.add(idKey);
+      if (nameCatKey) seen.add(nameCatKey);
+      uniqueItems.push(item);
+    }
+
+    res.json(uniqueItems);
   } catch (err) {
     console.error('Get menu error:', err);
     res.status(500).json({ error: 'Server error' });
