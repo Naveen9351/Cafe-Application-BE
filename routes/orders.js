@@ -611,12 +611,13 @@ router.get('/', auth, async (req, res) => {
       });
     }
 
-    // Non-paginated fallback for legacy callers (AdminPanel live feed, POS, etc.)
-    const maxLimit = limit === 'all' ? 5000 : (parseInt(limit, 10) || 500);
-    const orders = await Order.find(query)
-      .sort(sortOptions)
-      .limit(maxLimit)
-      .lean();
+    // Non-paginated fallback for callers (AdminPanel live feed, POS, etc.)
+    let ordersQuery = Order.find(query).sort(sortOptions);
+    if (limit !== 'all') {
+      const maxLimit = parseInt(limit, 10) || 500;
+      ordersQuery = ordersQuery.limit(maxLimit);
+    }
+    const orders = await ordersQuery.lean();
 
     res.json(orders);
   } catch (err) {
