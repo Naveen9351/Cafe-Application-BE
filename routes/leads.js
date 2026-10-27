@@ -76,6 +76,31 @@ const createLeadHandler = async (req, res) => {
     const lead = new Lead(leadData);
     await lead.save();
 
+    // Automatically record to real-time ActivityLog
+    try {
+      const ActivityLog = require('../models/ActivityLog');
+      await ActivityLog.create({
+        eventType: 'LEAD_SUBMISSION',
+        action: `Submitted Live Demo Walkthrough Request (${leadData.restaurantName})`,
+        category: 'Lead',
+        path: '/demo',
+        user: {
+          name: leadData.fullName,
+          email: leadData.workEmail,
+          role: 'prospective_client',
+          tenantName: leadData.restaurantName
+        },
+        city: leadData.city || 'Bangalore',
+        device: req.headers['user-agent'] && /mobile/i.test(req.headers['user-agent']) ? 'Mobile' : 'Desktop',
+        browser: 'Chrome',
+        referrer: req.headers.referer || 'Website Demo Form',
+        metadata: { phone: cleanPhone, outletType: leadData.outletType },
+        timestamp: new Date()
+      });
+    } catch (logErr) {
+      // Non-blocking analytics
+    }
+
     res.status(201).json({
       success: true,
       message: 'Demo request received successfully! Our hospitality specialist will contact you within 15 minutes.',
