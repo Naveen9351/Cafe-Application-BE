@@ -28,9 +28,35 @@ const createLeadHandler = async (req, res) => {
       source
     } = req.body;
 
-    const cleanPhone = String(phone || '').replace(/\D/g, '');
+    // Clean and validate phone number
+    let cleanPhone = String(phone || '').replace(/\D/g, '');
+    if (cleanPhone.startsWith('91') && cleanPhone.length === 12) {
+      cleanPhone = cleanPhone.slice(2);
+    } else if (cleanPhone.startsWith('0') && cleanPhone.length === 11) {
+      cleanPhone = cleanPhone.slice(1);
+    }
+
     if (!cleanPhone || cleanPhone.length !== 10) {
       return res.status(400).json({ success: false, error: 'Mobile number must be exactly 10 digits' });
+    }
+
+    if (!/^[6-9]/.test(cleanPhone)) {
+      return res.status(400).json({ success: false, error: 'Invalid mobile number: Indian numbers must start with 6, 7, 8, or 9' });
+    }
+
+    if (/^(\d)\1{9}$/.test(cleanPhone) || cleanPhone === '1234567890' || cleanPhone === '0123456789') {
+      return res.status(400).json({ success: false, error: 'Please enter a valid active mobile number' });
+    }
+
+    // Clean and validate email
+    const rawEmail = String(workEmail || email || '').trim();
+    if (!rawEmail) {
+      return res.status(400).json({ success: false, error: 'Email address is required' });
+    }
+
+    const emailRegex = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
+    if (!emailRegex.test(rawEmail)) {
+      return res.status(400).json({ success: false, error: 'Please enter a valid email address (e.g. name@company.com)' });
     }
 
     const leadData = {
