@@ -785,13 +785,27 @@ Try asking:
 // Stage 1: Document Layout & Menu Extraction (`POST /api/ai/extract-menu`)
 router.post('/extract-menu', [auth, upload.single('image')], async (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ error: "Image file is required for extraction" });
+    return res.status(400).json({ error: "Menu file (Image or PDF) is required for extraction" });
   }
 
   try {
-    console.log("🛠️ Preprocessing menu image variants via Sharp...");
-    const { originalBuffer, enhancedBuffer } = await preprocessImage(req.file.path);
-    const mimeType = req.file.mimetype || "image/jpeg";
+    const isPdf = req.file.mimetype === 'application/pdf' || (req.file.originalname && req.file.originalname.toLowerCase().endsWith('.pdf'));
+    let originalBuffer;
+    let enhancedBuffer;
+    let mimeType;
+
+    if (isPdf) {
+      console.log("📄 Processing menu PDF file directly for Gemini Document AI...");
+      originalBuffer = fs.readFileSync(req.file.path);
+      enhancedBuffer = originalBuffer;
+      mimeType = "application/pdf";
+    } else {
+      console.log("🛠️ Preprocessing menu image variants via Sharp...");
+      const pre = await preprocessImage(req.file.path);
+      originalBuffer = pre.originalBuffer;
+      enhancedBuffer = pre.enhancedBuffer;
+      mimeType = req.file.mimetype || "image/jpeg";
+    }
     const apiKey = process.env.GEMINI_API_KEY;
 
     let text = '';
@@ -847,7 +861,7 @@ Each object MUST have:
     }
 
     // OCR Fallback if Vision API unavailable
-    if (!text) {
+    if (!text && !isPdf) {
       console.log("📷 Running OCR + Sarvam AI Text Extraction Pipeline...");
       let rawOcrText = '';
       try {

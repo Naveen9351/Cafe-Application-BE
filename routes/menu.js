@@ -8,6 +8,7 @@ const cloudinary = require('cloudinary').v2;
 const auth = require('../middleware/auth');
 const checkRole = require('../middleware/checkRole');
 const MenuItem = require('../models/MenuItem');
+const { resolveFoodImage } = require('../utils/foodImageResolver');
 
 // Configure Cloudinary
 try {
@@ -113,23 +114,12 @@ router.get('/', async (req, res) => {
 
     let rawItems = await MenuItem.find(query).sort({ category: 1, name: 1 }).lean();
     
-    // Auto-seed starter menu items if tenant has 0 items in total
-    if (tenantId && rawItems.length === 0 && (!category || category === 'all') && !search) {
-      try {
-        const { seedStarterMenuItems } = require('../utils/starterMenu');
-        const seeded = await seedStarterMenuItems(tenantId);
-        if (seeded && seeded.length > 0) {
-          rawItems = await MenuItem.find(query).sort({ category: 1, name: 1 }).lean();
-        }
-      } catch (seedErr) {
-        console.warn('Auto-seed check error in GET /menu:', seedErr.message);
-      }
-    }
+
     
-    // Auto-repair items with missing or non-URL images
+    // Auto-repair items with missing, broken, or rate-limited pollinations images
     const items = rawItems.map(item => {
-      if (!item.image || typeof item.image !== 'string' || (!item.image.startsWith('http://') && !item.image.startsWith('https://') && !item.image.startsWith('/uploads'))) {
-        item.image = `https://image.pollinations.ai/prompt/delicious%20food%20photo%20of%20${encodeURIComponent(item.name || 'food')}%20gourmet%20dish?width=500&height=400&nologo=true`;
+      if (!item.image || typeof item.image !== 'string' || item.image.includes('pollinations.ai') || (!item.image.startsWith('http://') && !item.image.startsWith('https://') && !item.image.startsWith('/uploads'))) {
+        item.image = resolveFoodImage(item.name, item.category);
         MenuItem.updateOne({ _id: item._id }, { image: item.image }).exec().catch(() => {});
       }
       return item;
@@ -207,8 +197,8 @@ router.post(
         imageUrl = await uploadDishImage(req.file.path, req.tenantId || req.user?.tenantId);
       }
       
-      if (!imageUrl || typeof imageUrl !== 'string' || (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://') && !imageUrl.startsWith('/uploads'))) {
-        imageUrl = `https://image.pollinations.ai/prompt/delicious%20food%20photo%20of%20${encodeURIComponent(name)}%20gourmet%20dish?width=500&height=400&nologo=true`;
+      if (!imageUrl || typeof imageUrl !== 'string' || imageUrl.includes('pollinations.ai') || (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://') && !imageUrl.startsWith('/uploads'))) {
+        imageUrl = resolveFoodImage(name, category);
       }
 
       let variantsArr = [];
@@ -264,6 +254,77 @@ router.post(
 
     } catch (err) {
       console.error('Add menu item error:', err);
+      res.status(500).json({ error: 'Server error: ' + err.message });
+    }
+  }
+);
+
+// POST Bulk Insert Menu Items (From AI Menu Card Extraction or Bulk CSV)
+router.post(
+  '/bulk',
+  [auth, checkRole(['admin', 'super_admin'])],
+  async (req, res) => {
+    try {
+      const rawItems = Array.isArray(req.body.items) ? req.body.items : (Array.isArray(req.body) ? req.body : []);
+      if (!rawItems || rawItems.length === 0) {
+        return res.status(400).json({ error: 'No menu items provided for bulk insert' });
+      }
+
+      const tenantId = req.tenantId || req.user?.tenantId || '6a762ef86c9d5c8be315f10a';
+
+      const validDocs = [];
+      for (const item of rawItems) {
+        if (!item || !item.name) continue;
+        const name = String(item.name).trim();
+        if (!name) continue;
+
+        let numPrice = Math.round(Number(item.price));
+        if (isNaN(numPrice) || numPrice < 0) numPrice = 0;
+
+        let category = item.category ? String(item.category).trim().toLowerCase() : 'snacks';
+        
+        let isVeg = true;
+        if (item.type !== undefined) {
+          isVeg = String(item.type).toLowerCase() === 'veg';
+        } else if (item.isVeg !== undefined) {
+          isVeg = item.isVeg === true || item.isVeg === 'true';
+        }
+
+        let imageUrl = item.image || '';
+        if (!imageUrl || typeof imageUrl !== 'string' || imageUrl.includes('pollinations.ai') || (!imageUrl.startsWith('http://') && !imageUrl.startsWith('https://') && !imageUrl.startsWith('/uploads'))) {
+          imageUrl = resolveFoodImage(name, category);
+        }
+
+        validDocs.push({
+          tenantId,
+          name,
+          description: item.description ? String(item.description).trim() : `Fresh and delicious ${name} prepared to order.`,
+          price: numPrice,
+          category,
+          image: imageUrl,
+          isVeg,
+          isAvailable: item.isAvailable !== false,
+          discount: item.discount || { isDiscounted: false, type: 'percentage', value: 0 },
+          variants: Array.isArray(item.variants) ? item.variants : [],
+          addons: Array.isArray(item.addons) ? item.addons : []
+        });
+      }
+
+      if (validDocs.length === 0) {
+        return res.status(400).json({ error: 'No valid items found to insert' });
+      }
+
+      const inserted = await MenuItem.insertMany(validDocs);
+
+      console.log(`✅ Bulk inserted ${inserted.length} menu items for tenant ${tenantId}`);
+
+      res.status(201).json({
+        success: true,
+        count: inserted.length,
+        items: inserted
+      });
+    } catch (err) {
+      console.error('Bulk menu insert error:', err);
       res.status(500).json({ error: 'Server error: ' + err.message });
     }
   }

@@ -103,12 +103,9 @@ router.post(
         tenantId: tenantId
       });
 
-      // Fallback: If no items found, check if tenant needs starter dishes or name-based matching
+      // Fallback: Match by name if ID was client-generated or changed
       if (dbItems.length === 0) {
         try {
-          const { seedStarterMenuItems } = require('../utils/starterMenu');
-          await seedStarterMenuItems(tenantId);
-          
           const clientNames = items
             .map(i => (i.name || '').replace(/\s*\([^)]*\)/, '').trim())
             .filter(Boolean);
@@ -120,12 +117,8 @@ router.post(
               { name: { $in: clientNames } }
             ]
           });
-
-          if (dbItems.length === 0) {
-            dbItems = await MenuItem.find({ tenantId: tenantId });
-          }
-        } catch (seedErr) {
-          console.warn('Fallback seeding error in create order:', seedErr.message);
+        } catch (e) {
+          console.warn('Item fallback matching failed in order creation:', e.message);
         }
       }
 
@@ -779,7 +772,22 @@ router.put('/table/:tableNumber/pay-items', auth, async (req, res) => {
         const someItemsPaid = ord.items.some(it => it.isPaid);
 
         ord.paymentStatus = allItemsPaid ? 'paid' : (someItemsPaid ? 'partial' : 'pending');
-        ord.paidAmount = ord.items.reduce((sum, it) => it.isPaid ? sum + (Number(it.price) * (Number(it.quantity) || 1)) : sum, 0);
+
+        const calculatedItemPaid = ord.items.reduce((sum, it) => it.isPaid ? sum + (Number(it.price) * (Number(it.quantity) || 1)) : sum, 0);
+
+        const customSettled = req.body.actualAmount !== undefined && req.body.actualAmount !== null
+          ? Number(req.body.actualAmount)
+          : (req.body.settledAmount !== undefined && req.body.settledAmount !== null ? Number(req.body.settledAmount) : null);
+
+        if (customSettled !== null && payAll) {
+          ord.settledAmount = customSettled;
+          ord.paidAmount = customSettled;
+          ord.paymentStatus = 'paid';
+          totalNewlyPaid = customSettled;
+        } else {
+          ord.paidAmount = calculatedItemPaid;
+        }
+
         if (paymentMethod) ord.paymentMethod = paymentMethod;
 
         await ord.save();

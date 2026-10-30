@@ -9,7 +9,7 @@ const auth = require('../middleware/auth');
  * Helper to ensure tenantId is resolved
  */
 const getTenantId = async (req) => {
-    let tenantId = req.user?.tenantId || req.tenantId;
+    let tenantId = req.user?.tenantId?._id || req.user?.tenantId || req.tenantId || req.body?.tenantId || req.query?.tenantId;
     if (!tenantId && req.user?.id) {
         try {
             const user = await User.findById(req.user.id);
@@ -31,7 +31,15 @@ const getTenantId = async (req) => {
 router.get('/', auth, async (req, res) => {
     try {
         const tenantId = await getTenantId(req);
-        const query = tenantId ? { tenantId } : {};
+        let query = {};
+        if (tenantId) {
+            query = {
+                $or: [
+                    { tenantId: tenantId },
+                    { tenantId: String(tenantId) }
+                ]
+            };
+        }
         const records = await KhataRecord.find(query).sort({ createdAt: -1 });
 
         const totalOutstanding = records
@@ -73,6 +81,9 @@ router.post('/', auth, async (req, res) => {
         }
 
         const cleanPhone = String(customerPhone).replace(/[^0-9]/g, '');
+        if (cleanPhone.length < 5) {
+            return res.status(400).json({ success: false, error: 'Please enter a valid phone number (at least 5 digits)' });
+        }
 
         const newRecord = new KhataRecord({
             tenantId,
