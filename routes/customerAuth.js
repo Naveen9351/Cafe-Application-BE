@@ -42,7 +42,7 @@ router.post('/send-otp', async (req, res) => {
             success: true,
             message: `OTP sent successfully to +91 ${cleanPhone.slice(-4).padStart(cleanPhone.length, '*')}`,
             provider: smsResult.provider,
-            devOtp: generatedOtp
+            ...(!smsResult.sent ? { devOtp: generatedOtp } : {})
         });
     } catch (err) {
         console.error('Send OTP error:', err);
