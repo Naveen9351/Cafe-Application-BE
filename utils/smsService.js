@@ -4,44 +4,73 @@
  */
 const https = require('https');
 
+function makeFast2SmsRequest(apiKey, postData) {
+    return new Promise((resolve, reject) => {
+        const options = {
+            hostname: 'www.fast2sms.com',
+            path: '/dev/bulkV2',
+            method: 'POST',
+            headers: {
+                'authorization': apiKey,
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(postData)
+            }
+        };
+
+        const req = https.request(options, (res) => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                try {
+                    const parsed = JSON.parse(data);
+                    resolve(parsed);
+                } catch (e) {
+                    resolve({ return: false, raw: data });
+                }
+            });
+        });
+
+        req.on('error', reject);
+        req.write(postData);
+        req.end();
+    });
+}
+
 async function sendSmsOtp(phone, otp) {
     const cleanPhone = phone.replace(/[^0-9]/g, '');
 
-    // 1. Fast2SMS (Indian SMS Gateway - Quick OTP Route)
+    // 1. Fast2SMS (Indian SMS Gateway - Automatic Dual-Route Strategy)
     if (process.env.FAST2SMS_API_KEY) {
         try {
-            const postData = JSON.stringify({
+            // Route Attempt 1: 'otp' route (requires website verification on Fast2SMS)
+            const otpPayload = JSON.stringify({
                 variables_values: otp,
                 route: 'otp',
                 numbers: cleanPhone
             });
 
-            const options = {
-                hostname: 'www.fast2sms.com',
-                path: '/dev/bulkV2',
-                method: 'POST',
-                headers: {
-                    'authorization': process.env.FAST2SMS_API_KEY,
-                    'Content-Type': 'application/json',
-                    'Content-Length': Buffer.byteLength(postData)
-                }
-            };
+            const otpRes = await makeFast2SmsRequest(process.env.FAST2SMS_API_KEY, otpPayload);
+            console.log(`[Fast2SMS OTP Route Response] for +91 ${cleanPhone}:`, otpRes);
 
-            await new Promise((resolve, reject) => {
-                const req = https.request(options, (res) => {
-                    let data = '';
-                    res.on('data', chunk => data += chunk);
-                    res.on('end', () => {
-                        console.log(`[Fast2SMS Response] for +91 ${cleanPhone}:`, data);
-                        resolve(data);
-                    });
-                });
-                req.on('error', reject);
-                req.write(postData);
-                req.end();
+            if (otpRes && otpRes.return === true) {
+                return { sent: true, provider: 'fast2sms' };
+            }
+
+            // Route Attempt 2: 'q' (Quick SMS route - works instantly after ₹100 recharge)
+            console.log(`[Fast2SMS] OTP route returned: ${otpRes?.message || 'pending verification'}. Falling back to Quick SMS route ('q')...`);
+            const quickPayload = JSON.stringify({
+                message: `Your DineviQ verification OTP is ${otp}. Valid for 5 minutes.`,
+                language: 'english',
+                route: 'q',
+                numbers: cleanPhone
             });
 
-            return { sent: true, provider: 'fast2sms' };
+            const quickRes = await makeFast2SmsRequest(process.env.FAST2SMS_API_KEY, quickPayload);
+            console.log(`[Fast2SMS Quick Route Response] for +91 ${cleanPhone}:`, quickRes);
+
+            if (quickRes && quickRes.return === true) {
+                return { sent: true, provider: 'fast2sms' };
+            }
         } catch (err) {
             console.error('[Fast2SMS Error]:', err.message);
         }
