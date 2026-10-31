@@ -48,7 +48,7 @@ async function sendSmsOtp(phone, otp) {
     const cleanPhone = rawDigits.length > 10 && rawDigits.startsWith('91') ? rawDigits.slice(2) : rawDigits;
 
     // 1. HanuOTP Gateway (No DLT required - Without DLT SMS & WhatsApp OTP)
-    const hanuApiKey = process.env.HANU_OTP_API_KEY || process.env.HANUOTP_API_KEY;
+    const hanuApiKey = process.env.HANU_OTP_API_KEY || process.env.HANUOTP_API_KEY || '8040b5dc9b441bedc06ed4df7f478ae7';
     if (hanuApiKey) {
         try {
             console.log(`[HanuOTP] Dispatching OTP ${otp} to +91 ${cleanPhone}...`);
