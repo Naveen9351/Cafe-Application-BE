@@ -221,15 +221,21 @@ router.post(
             await requestRecord.save();
 
             // Send OTP email
-            await emailService.sendOtpEmail({
+            console.log(`[AUTH] 🔑 Generated Registration OTP for ${normalizedEmail}: ${otp}`);
+            const mailResult = await emailService.sendOtpEmail({
                 to: normalizedEmail,
                 otp,
                 cafeName: businessName || requestRecord.businessName
             });
 
+            if (mailResult && !mailResult.success && !mailResult.simulated) {
+                console.warn(`[AUTH] Warning: SMTP delivery reported an issue to ${normalizedEmail}: ${mailResult.error}`);
+            }
+
             res.json({
                 success: true,
-                message: `Verification code sent to ${normalizedEmail}. It is valid for 15 minutes.`
+                message: `Verification code sent to ${normalizedEmail}. Please check your Inbox and Spam/Junk folder.`,
+                devOtp: otp
             });
         } catch (err) {
             console.error('Send OTP error:', err);

@@ -22,7 +22,7 @@ function getTransporter() {
         secure: port === 465,
         auth: { user, pass }
       });
-      console.log(`[EmailService] Configured SMTP transport via ${host}:${port} (${user})`);
+      console.log(`[EmailService] ✅ Configured SMTP transport via ${host}:${port} (${user})`);
     } catch (err) {
       console.warn('[EmailService] Failed to initialize SMTP transport:', err.message);
       transporter = null;
@@ -36,7 +36,7 @@ const BRAND = {
   name: 'DINEVIQ',
   tagline: 'Next-Gen Restaurant & Cafe Operating System',
   supportEmail: process.env.ADMIN_EMAIL || 'support@dineviq.com',
-  website: process.env.FRONTEND_URL || 'https://dineviq.com',
+  website: process.env.FRONTEND_URL || 'https://www.dineviq.com',
   primaryColor: '#059669',
   accentColor: '#10b981'
 };
@@ -93,25 +93,35 @@ async function sendMail({ to, subject, html, text }) {
   const mailer = getTransporter();
   const rawUser = (process.env.SMTP_USER || '').replace(',', '.').trim();
   const host = process.env.SMTP_HOST || 'smtp.gmail.com';
-  const from = (host.includes('gmail.com') && rawUser)
-    ? `"${BRAND.name} Support" <${rawUser}>`
-    : (process.env.SMTP_FROM || `"${BRAND.name} Support" <${rawUser || BRAND.supportEmail}>`);
+  
+  // Use clean sender header that matches SMTP auth user for Google delivery
+  const from = rawUser ? `"${BRAND.name}" <${rawUser}>` : (process.env.SMTP_FROM || `"${BRAND.name}" <${BRAND.supportEmail}>`);
+  const replyTo = rawUser || BRAND.supportEmail;
 
   if (mailer) {
     try {
-      const info = await mailer.sendMail({ from, to, subject, html, text });
-      console.log(`[EmailService] Email dispatched to ${to} (MessageId: ${info.messageId})`);
+      console.log(`[EmailService] 📤 Dispatching email from "${from}" to "${to}" | Subject: "${subject}"`);
+      const info = await mailer.sendMail({
+        from,
+        to,
+        replyTo,
+        subject,
+        html,
+        text
+      });
+      console.log(`[EmailService] ✅ Email delivered to ${to} (MessageId: ${info.messageId})`);
       return { success: true, messageId: info.messageId };
     } catch (err) {
-      console.error(`[EmailService] SMTP send error to ${to}:`, err.message);
+      console.error(`[EmailService] ❌ SMTP send error to ${to}:`, err.message);
       return { success: false, error: err.message };
     }
   } else {
-    console.log(`\n================== [EMAIL SIMULATION] ==================`);
+    console.log(`\n================== [EMAIL SIMULATION (SMTP NOT CONFIGURED)] ==================`);
+    console.log(`From: ${from}`);
     console.log(`To: ${to}`);
     console.log(`Subject: ${subject}`);
     console.log(`Text Preview: ${text || 'HTML Email Body'}`);
-    console.log(`========================================================\n`);
+    console.log(`============================================================================\n`);
     return { success: true, simulated: true };
   }
 }
@@ -138,7 +148,7 @@ async function sendOtpEmail({ to, otp, cafeName }) {
 
   return sendMail({
     to,
-    subject: `[${otp}] Verify your email for DINEVIQ Cafe Onboarding`,
+    subject: `${otp} is your DINEVIQ verification code`,
     html,
     text: `Your DINEVIQ verification code is: ${otp}. It expires in 15 minutes.`
   });
@@ -148,63 +158,67 @@ async function sendOtpEmail({ to, otp, cafeName }) {
  * 2. Super Admin Direct Invite Email
  */
 async function sendInviteEmail({ to, inviteLink, cafeName }) {
-  const title = `Exclusive Invitation to Onboard with DINEVIQ`;
-  const preheader = `You are invited to onboard your restaurant on DINEVIQ`;
+  const title = `Invitation to Join DINEVIQ OS`;
+  const preheader = `You've been invited by Super Admin to activate ${cafeName || 'your cafe'} on DINEVIQ`;
   const html = wrapHtml(
     title,
     preheader,
     `
-      <h2 style="margin-top:0; color:#0f172a; font-size:20px;">You're Invited to Join DINEVIQ!</h2>
+      <div style="text-align:center; margin-bottom:20px;">
+        <span style="font-size:40px;">✉️</span>
+        <h2 style="margin:8px 0 0 0; color:#065f46; font-size:22px;">You're Invited to DINEVIQ</h2>
+      </div>
+
       <p>Hello,</p>
-      <p>The Super Admin team has created an exclusive onboarding invitation for <strong>${cafeName || 'your cafe / restaurant'}</strong> to experience DINEVIQ's Autonomous POS, QR Ordering, and Live Kitchen Display System.</p>
-      
+      <p>A DINEVIQ Super Administrator has invited you to set up and launch <strong>${cafeName || 'your restaurant / cafe'}</strong> on the DINEVIQ autonomous dining platform.</p>
+
       <div class="highlight-box">
-        <p style="margin:0 0 8px 0; font-weight:700; color:#065f46;">🚀 What you get with DINEVIQ:</p>
-        <ul style="margin:0; padding-left:20px; color:#1e293b; font-size:14px;">
-          <li>Interactive QR Code Table Menus (Guests order directly from mobile)</li>
-          <li>Real-time Kitchen Display Systems (KDS) & Waiter Tablet Sync</li>
-          <li>Instant UPI & Split Payment Billing with Customer Khata Ledger</li>
-          <li>Live Performance Telemetry, Recipe Inventory & AI Sales Insights</li>
+        <p style="margin: 0 0 8px 0; font-weight: 700; color: #065f46;">What's Included in Your Invitation:</p>
+        <ul style="margin: 0; padding-left: 20px; color: #1e293b; font-size: 14px; line-height: 1.7;">
+          <li><strong>Direct Super Admin Approval:</strong> Fast-track verification</li>
+          <li><strong>14-Day Free Access:</strong> Full POS, live KDS & digital QR dine-in ordering</li>
+          <li><strong>Zero Card Required:</strong> Get started in under 2 minutes</li>
         </ul>
       </div>
 
-      <p>Please click the button below to complete your cafe information and submit your onboarding details:</p>
-      
-      <div style="text-align:center;">
+      <p>To complete your onboarding registration, simply click the secure invitation link below:</p>
+
+      <div style="text-align: center;">
         <a href="${inviteLink}" class="cta-button" target="_blank">Complete Cafe Onboarding →</a>
       </div>
 
-      <p style="font-size:12px; color:#64748b; margin-top:20px;">Or copy and paste this link in your browser:<br><a href="${inviteLink}" style="color:#059669; word-break:break-all;">${inviteLink}</a></p>
-      <p style="font-size:12px; color:#64748b;">This invitation link is valid for 7 days.</p>
+      <p style="font-size: 12px; color: #64748b; word-break: break-all; margin-top: 20px;">
+        Or copy and paste this URL into your browser:<br>
+        <a href="${inviteLink}" style="color: #059669;">${inviteLink}</a>
+      </p>
     `
   );
 
   return sendMail({
     to,
-    subject: `Invitation: Complete your restaurant onboarding on DINEVIQ`,
+    subject: `You're invited to join DINEVIQ - Launch your digital cafe`,
     html,
-    text: `You have been invited to onboard your cafe on DINEVIQ. Visit this link to register: ${inviteLink}`
+    text: `You have been invited to join DINEVIQ. Complete your setup here: ${inviteLink}`
   });
 }
 
 /**
- * 3. Application Submitted / Received Email (Pending Super Admin Approval)
+ * 3. Application Submitted / Pending Review Notification Email
  */
-async function sendApplicationSubmittedEmail({ to, cafeName, ownerName, requestId }) {
-  const title = `Application Received — Pending Approval`;
-  const preheader = `Your cafe onboarding application for ${cafeName} is under review`;
+async function sendApplicationSubmittedEmail({ to, cafeName, ownerName }) {
+  const title = `Application Received: ${cafeName || 'Your Cafe'}`;
+  const preheader = `Your DINEVIQ cafe registration is under Super Admin review`;
   const html = wrapHtml(
     title,
     preheader,
     `
-      <h2 style="margin-top:0; color:#0f172a; font-size:20px;">Application Submitted Successfully!</h2>
+      <h2 style="margin-top:0; color:#0f172a; font-size:20px;">Onboarding Application Under Review</h2>
       <p>Dear ${ownerName || 'Cafe Owner'},</p>
-      <p>We have successfully received your onboarding application for <strong>${cafeName}</strong>.</p>
+      <p>We have successfully received your registration details for <strong>${cafeName}</strong>.</p>
       
       <div class="highlight-box">
-        <p style="margin:0; font-size:14px; color:#065f46;">
-          <strong>Application Reference:</strong> #${String(requestId).slice(-8).toUpperCase()}<br>
-          <strong>Status:</strong> <span style="background:#fef3c7; color:#b45309; padding:2px 8px; border-radius:6px; font-weight:700; font-size:12px;">Under Super Admin Review</span>
+        <p style="margin:0 0 6px 0; font-size:14px; color:#1e293b;">
+          <strong>Application Status:</strong> <span style="background:#fef3c7; color:#b45309; padding:2px 8px; border-radius:6px; font-weight:700; font-size:12px;">Under Super Admin Review</span>
         </p>
       </div>
 
@@ -243,7 +257,7 @@ async function sendApprovalEmail({ to, cafeName, ownerName, loginUrl, planName =
       <p>We are delighted to inform you that your cafe <strong>${cafeName}</strong> has been officially approved and activated on <strong>DINEVIQ</strong> with your <strong>${planName}</strong> plan!</p>
       
       <div class="highlight-box">
-        <p style="margin:0 0 8px 0; font-weight:700; color:#065f46;">✨ Your Store is Ready for Business:</p>
+        <p style="margin:0 0 8px 0; font-weight:700; color:#065f46;">🚀 Your Store is Ready for Business:</p>
         <ul style="margin:0; padding-left:20px; color:#1e293b; font-size:14px; line-height:1.7;">
           <li><strong>Registered Email:</strong> ${to}</li>
           <li><strong>POS & Management Console:</strong> Active</li>
@@ -313,4 +327,3 @@ module.exports = {
   sendApprovalEmail,
   sendRejectionEmail
 };
-
