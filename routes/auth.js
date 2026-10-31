@@ -235,7 +235,6 @@ router.post(
             res.json({
                 success: true,
                 message: `Verification code sent to ${normalizedEmail}. Please check your Inbox and Spam/Junk folder.`,
-                devOtp: otp
             });
         } catch (err) {
             console.error('Send OTP error:', err);
