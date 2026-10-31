@@ -377,6 +377,7 @@ router.put('/settings', auth, async (req, res) => {
 });
 
 // Delete Tenant (Super Admin Only)
+// Cascades deletion to matching Onboarding Applications, Users, Orders, Menu Items, and Tables
 router.delete('/:id', [auth, checkRole(['super_admin'])], async (req, res) => {
     try {
         const tenantId = req.params.id;
@@ -389,16 +390,36 @@ router.delete('/:id', [auth, checkRole(['super_admin'])], async (req, res) => {
         const User = require('../models/User');
         const MenuItem = require('../models/MenuItem');
         const Order = require('../models/Order');
+        const OnboardingRequest = require('../models/OnboardingRequest');
 
-        await User.deleteMany({ tenantId });
-        await MenuItem.deleteMany({ tenantId });
-        await Order.deleteMany({ tenantId });
+        const tenantEmail = tenant.email ? tenant.email.toLowerCase().trim() : null;
+
+        // Delete all users belonging to this tenant OR matching the tenant owner email (never delete super_admin)
+        await User.deleteMany({
+            role: { $ne: 'super_admin' },
+            $or: [
+                { tenantId: tenant._id },
+                ...(tenant.ownerId ? [{ _id: tenant.ownerId }] : []),
+                ...(tenantEmail ? [{ email: tenantEmail }] : [])
+            ]
+        });
+
+        // Delete all onboarding requests / applications linked to this tenant or email
+        await OnboardingRequest.deleteMany({
+            $or: [
+                { createdTenantId: tenant._id },
+                ...(tenantEmail ? [{ email: tenantEmail }] : [])
+            ]
+        });
+
+        await MenuItem.deleteMany({ tenantId: tenant._id });
+        await Order.deleteMany({ tenantId: tenant._id });
         await Tenant.findByIdAndDelete(tenantId);
 
-        res.json({ message: 'Tenant and all associated data deleted successfully' });
+        res.json({ success: true, message: 'Tenant, user accounts, and onboarding applications deleted successfully' });
     } catch (err) {
         console.error("Delete tenant error:", err);
-        res.status(500).json({ error: "Failed to delete tenant" });
+        res.status(500).json({ error: "Failed to delete tenant: " + err.message });
     }
 });
 
@@ -562,6 +583,7 @@ router.post('/onboarding-requests/:id/resend-invite', [auth, checkRole(['super_a
 });
 
 // Delete / Revoke an Onboarding Request or Invitation (Super Admin)
+// Also cascades deletion to any matching registered Cafe / Tenant and User accounts
 router.delete('/onboarding-requests/:id', [auth, checkRole(['super_admin'])], async (req, res) => {
     try {
         const record = await OnboardingRequest.findById(req.params.id);
@@ -569,8 +591,41 @@ router.delete('/onboarding-requests/:id', [auth, checkRole(['super_admin'])], as
             return res.status(404).json({ error: 'Record not found' });
         }
 
+        const User = require('../models/User');
+        const Tenant = require('../models/Tenant');
+        const MenuItem = require('../models/MenuItem');
+        const Order = require('../models/Order');
+
+        const reqEmail = record.email ? record.email.toLowerCase().trim() : null;
+        const tenantId = record.createdTenantId;
+
+        // If this request had an approved tenant, delete that tenant and all its data
+        if (tenantId) {
+            await Tenant.findByIdAndDelete(tenantId);
+            await MenuItem.deleteMany({ tenantId });
+            await Order.deleteMany({ tenantId });
+            await User.deleteMany({ tenantId, role: { $ne: 'super_admin' } });
+        } else if (reqEmail) {
+            // Also check if a registered tenant with this email exists and delete it
+            const matchingTenants = await Tenant.find({ email: reqEmail });
+            for (const t of matchingTenants) {
+                await Tenant.findByIdAndDelete(t._id);
+                await MenuItem.deleteMany({ tenantId: t._id });
+                await Order.deleteMany({ tenantId: t._id });
+                await User.deleteMany({ tenantId: t._id, role: { $ne: 'super_admin' } });
+            }
+        }
+
+        // Delete any matching users created from this onboarding request (never delete super_admin)
+        if (record.createdUserId) {
+            await User.deleteOne({ _id: record.createdUserId, role: { $ne: 'super_admin' } });
+        }
+        if (reqEmail) {
+            await User.deleteMany({ email: reqEmail, role: { $ne: 'super_admin' } });
+        }
+
         await OnboardingRequest.findByIdAndDelete(req.params.id);
-        res.json({ success: true, message: 'Record removed successfully' });
+        res.json({ success: true, message: 'Application, associated cafe, and user accounts removed successfully' });
     } catch (err) {
         console.error('Delete onboarding request error:', err);
         res.status(500).json({ error: 'Failed to delete record: ' + err.message });

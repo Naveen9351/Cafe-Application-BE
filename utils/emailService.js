@@ -8,8 +8,11 @@ function getTransporter() {
 
   const host = process.env.SMTP_HOST || 'smtp.gmail.com';
   const port = parseInt(process.env.SMTP_PORT || '587', 10);
-  const user = process.env.SMTP_USER || process.env.EMAIL_USER;
-  const pass = process.env.SMTP_PASS || process.env.EMAIL_PASS;
+  const rawUser = process.env.SMTP_USER || process.env.EMAIL_USER || '';
+  const rawPass = process.env.SMTP_PASS || process.env.EMAIL_PASS || '';
+
+  const user = rawUser.replace(',', '.').trim();
+  const pass = rawPass.replace(/\s+/g, '');
 
   if (user && pass) {
     try {
@@ -88,7 +91,11 @@ function wrapHtml(title, preheader, contentHtml) {
  */
 async function sendMail({ to, subject, html, text }) {
   const mailer = getTransporter();
-  const from = process.env.SMTP_FROM || `"${BRAND.name} Support" <${process.env.SMTP_USER || BRAND.supportEmail}>`;
+  const rawUser = (process.env.SMTP_USER || '').replace(',', '.').trim();
+  const host = process.env.SMTP_HOST || 'smtp.gmail.com';
+  const from = (host.includes('gmail.com') && rawUser)
+    ? `"${BRAND.name} Support" <${rawUser}>`
+    : (process.env.SMTP_FROM || `"${BRAND.name} Support" <${rawUser || BRAND.supportEmail}>`);
 
   if (mailer) {
     try {
