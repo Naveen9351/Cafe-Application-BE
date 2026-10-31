@@ -85,17 +85,21 @@ router.post('/', auth, async (req, res) => {
             return res.status(400).json({ success: false, error: 'Please enter a valid phone number (at least 5 digits)' });
         }
 
+        const parsedBill = Math.max(0, Number(totalBill) || (Number(paidAmount || 0) + Number(borrowAmount)));
+        const parsedPaid = Math.min(parsedBill, Math.max(0, Number(paidAmount) || 0));
+        const parsedBorrow = Math.max(0, parsedBill - parsedPaid);
+
         const newRecord = new KhataRecord({
             tenantId,
             orderId: orderId || null,
             orderNumber: orderNumber || '',
             customerName: customerName.trim(),
             customerPhone: cleanPhone || customerPhone.trim(),
-            totalBill: Number(totalBill) || (Number(paidAmount || 0) + Number(borrowAmount)),
-            paidAmount: Number(paidAmount) || 0,
-            borrowAmount: Number(borrowAmount),
+            totalBill: parsedBill,
+            paidAmount: parsedPaid,
+            borrowAmount: parsedBorrow,
             notes: notes || '',
-            status: Number(borrowAmount) <= 0 ? 'settled' : (Number(paidAmount) > 0 ? 'partially_settled' : 'pending')
+            status: parsedBorrow <= 0 ? 'settled' : (parsedPaid > 0 ? 'partially_settled' : 'pending')
         });
 
         await newRecord.save();

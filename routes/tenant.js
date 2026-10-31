@@ -310,27 +310,65 @@ router.put('/:id/subscription', [auth, checkRole(['super_admin'])], async (req, 
     }
 });
 
-// Deactivate Tenant Subscription (Super Admin)
+// Deactivate Tenant Subscription with Auto Pro-Rata Refund Calculation (Super Admin)
 router.put('/:id/deactivate-subscription', [auth, checkRole(['super_admin'])], async (req, res) => {
     try {
         const tenant = await Tenant.findById(req.params.id);
         if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
+        const sub = tenant.subscription || {};
+        const now = new Date();
+        const start = sub.startDate ? new Date(sub.startDate) : now;
+        const end = sub.endDate ? new Date(sub.endDate) : now;
+        const price = Number(sub.price) || 0;
+
+        // Total planned duration in days
+        const totalDurationMs = Math.max(0, end.getTime() - start.getTime());
+        const totalDays = Math.max(1, Math.ceil(totalDurationMs / (1000 * 60 * 60 * 24)));
+
+        // Remaining duration in days
+        const remainingMs = Math.max(0, end.getTime() - now.getTime());
+        const remainingDays = Math.max(0, Math.ceil(remainingMs / (1000 * 60 * 60 * 24)));
+        const usedDays = Math.max(0, totalDays - remainingDays);
+
+        // Daily rate & Pro-rata refund calculation
+        const dailyRate = price > 0 ? (price / totalDays) : 0;
+        const refundAmount = remainingDays > 0 && price > 0 ? Math.round(dailyRate * remainingDays) : 0;
+
         tenant.subscription.isActive = false;
+        tenant.subscription.deactivatedAt = now;
+        tenant.subscription.refundDue = refundAmount;
+        tenant.subscription.remainingDays = remainingDays;
 
         if (!tenant.subscriptionHistory) tenant.subscriptionHistory = [];
         tenant.subscriptionHistory.push({
-            plan: tenant.subscription.plan,
-            price: tenant.subscription.price,
-            startDate: tenant.subscription.startDate,
-            endDate: tenant.subscription.endDate,
+            plan: sub.plan,
+            price: price,
+            startDate: sub.startDate,
+            endDate: sub.endDate,
             status: 'deactivated',
-            actionDate: new Date(),
-            notes: 'Deactivated in-between by Admin'
+            actionDate: now,
+            totalDays,
+            usedDays,
+            remainingDays,
+            refundAmount,
+            dailyRate: Math.round(dailyRate * 100) / 100,
+            notes: `Deactivated in-between. ${remainingDays} days pending. Refund Due: ₹${refundAmount}`
         });
 
         await tenant.save();
-        res.json(tenant);
+        res.json({
+            success: true,
+            tenant,
+            refundCalculation: {
+                totalDays,
+                usedDays,
+                remainingDays,
+                price,
+                dailyRate: Math.round(dailyRate * 100) / 100,
+                refundAmount
+            }
+        });
     } catch (err) {
         console.error("Deactivation error:", err);
         res.status(500).json({ error: "Deactivation failed" });

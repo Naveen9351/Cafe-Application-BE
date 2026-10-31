@@ -18,6 +18,9 @@ const tenantSchema = new mongoose.Schema({
     startDate: { type: Date, default: Date.now },
     endDate: { type: Date },
     isActive: { type: Boolean, default: true },
+    refundDue: { type: Number, default: 0 },
+    remainingDays: { type: Number, default: 0 },
+    deactivatedAt: { type: Date },
     orderLimit: { type: Number, default: 999999 },
     orderCount: { type: Number, default: 0 },
     features: {
