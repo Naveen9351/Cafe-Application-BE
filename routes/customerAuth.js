@@ -35,14 +35,13 @@ router.post('/send-otp', async (req, res) => {
             expiresAt
         });
 
-        // Dispatch SMS via Fast2SMS / Twilio or log to terminal
+        // Dispatch SMS via HanuOTP / Fast2SMS / Twilio
         const smsResult = await sendSmsOtp(cleanPhone, generatedOtp);
 
         return res.json({
             success: true,
-            message: `OTP sent successfully to +91 ${cleanPhone.slice(-4).padStart(cleanPhone.length, '*')}`,
-            provider: smsResult.provider,
-            ...(!smsResult.sent ? { devOtp: generatedOtp } : {})
+            message: `OTP sent successfully to +91 ******${cleanPhone.slice(-4)}`,
+            provider: smsResult.provider
         });
     } catch (err) {
         console.error('Send OTP error:', err);
