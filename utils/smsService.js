@@ -47,15 +47,15 @@ async function sendSmsOtp(phone, otp) {
     const rawDigits = phone.replace(/[^0-9]/g, '');
     const cleanPhone = rawDigits.length > 10 && rawDigits.startsWith('91') ? rawDigits.slice(2) : rawDigits;
 
-    // 1. HanuOTP Gateway (No DLT required - Without DLT SMS OTP)
+    // 1. HanuOTP Gateway (No DLT required - Without DLT SMS & WhatsApp OTP)
     const hanuApiKey = process.env.HANU_OTP_API_KEY || process.env.HANUOTP_API_KEY;
     if (hanuApiKey) {
         try {
             console.log(`[HanuOTP] Dispatching OTP ${otp} to +91 ${cleanPhone}...`);
-            // Attempt 1: Standard 10-digit mobile number
+            // Attempt 1: SMS OTP Route
             const hanuUrl = `https://api.hanuotp.in/sms-otp.php?number=${cleanPhone}&OTP=${otp}&apikey=${encodeURIComponent(hanuApiKey)}&templatesid=default`;
             let res = await makeHttpsGet(hanuUrl);
-            console.log(`[HanuOTP Response] for ${cleanPhone}:`, res.raw);
+            console.log(`[HanuOTP SMS Response] for ${cleanPhone}:`, res.raw);
 
             const isSuccess = res.data?.return === true || 
                             res.data?.status === 'success' || 
@@ -66,14 +66,14 @@ async function sendSmsOtp(phone, otp) {
                 return { sent: true, provider: 'hanuotp' };
             }
 
-            // Attempt 2: If failed or returned invalid format, retry with 91 prefix
-            console.log(`[HanuOTP] Retrying with 91 prefix for 91${cleanPhone}...`);
-            const retryUrl = `https://api.hanuotp.in/sms-otp.php?number=91${cleanPhone}&OTP=${otp}&apikey=${encodeURIComponent(hanuApiKey)}&templatesid=default`;
-            res = await makeHttpsGet(retryUrl);
-            console.log(`[HanuOTP 91-prefix Response] for 91${cleanPhone}:`, res.raw);
+            // Attempt 2: WhatsApp OTP Route (Instant delivery directly to WhatsApp)
+            console.log(`[HanuOTP] SMS route returned error. Attempting HanuOTP WhatsApp route for ${cleanPhone}...`);
+            const waUrl = `https://api.hanuotp.in/whatsapp-otp.php?apikey=${encodeURIComponent(hanuApiKey)}&number=${cleanPhone}&OTP=${otp}`;
+            const waRes = await makeHttpsGet(waUrl);
+            console.log(`[HanuOTP WhatsApp Response] for ${cleanPhone}:`, waRes.raw);
 
-            if (res.data?.return === true || res.data?.status === 'success' || res.data?.request_id || (res.raw && res.raw.toLowerCase().includes('success'))) {
-                return { sent: true, provider: 'hanuotp' };
+            if (waRes.data?.return === true || waRes.data?.status === 'success' || waRes.data?.request_id || (waRes.raw && waRes.raw.toLowerCase().includes('success'))) {
+                return { sent: true, provider: 'hanuotp_whatsapp' };
             }
         } catch (err) {
             console.error('[HanuOTP Error]:', err.message);
