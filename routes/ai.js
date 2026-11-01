@@ -80,6 +80,7 @@ const validateMenuItem = (item, index) => {
     else if (n.includes('pizza')) category = 'pizza';
     else if (n.includes('sandwich')) category = 'sandwich';
     else if (n.includes('pasta')) category = 'pasta';
+    else if (n.includes('ice tea') || n.includes('iced tea')) category = 'cold-drinks';
     else if (n.includes('chai') || n.includes('tea') || n.includes('coffee')) category = 'hot-coffee';
     else if (n.includes('pie') || n.includes('cake') || n.includes('brownie') || n.includes('pastry') || n.includes('ice cream')) category = 'desserts';
     else if (n.includes('shake')) category = 'shakes';

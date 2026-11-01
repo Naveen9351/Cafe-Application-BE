@@ -95,7 +95,7 @@ const deleteCloudinaryImage = async (imageUrl) => {
 // GET Public Menu (Filter by Tenant)
 router.get('/', async (req, res) => {
   try {
-    const { tenantId, category, search, includeUnavailable } = req.query;
+    const { tenantId, category, categoryId, search, includeUnavailable } = req.query;
 
     let query = {};
     if (includeUnavailable !== 'true') {
@@ -104,8 +104,9 @@ router.get('/', async (req, res) => {
 
     if (tenantId) query.tenantId = tenantId;
 
-    if (category && category !== 'all') {
-      query.category = category;
+    const filterCat = categoryId || category;
+    if (filterCat && filterCat !== 'all') {
+      query.$or = [{ categoryId: filterCat }, { category: filterCat }];
     }
 
     if (search) {
@@ -121,6 +122,9 @@ router.get('/', async (req, res) => {
       if (!item.image || typeof item.image !== 'string' || item.image.includes('pollinations.ai') || (!item.image.startsWith('http://') && !item.image.startsWith('https://') && !item.image.startsWith('/uploads'))) {
         item.image = resolveFoodImage(item.name, item.category);
         MenuItem.updateOne({ _id: item._id }, { image: item.image }).exec().catch(() => {});
+      }
+      if (!item.categoryId && item.category) {
+        item.categoryId = String(item.category).toLowerCase().trim().replace(/\s+/g, '-');
       }
       return item;
     });
@@ -161,7 +165,8 @@ router.post(
     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
     try {
-      const { name, description, price, category, isVeg, isAvailable } = req.body;
+      const { name, description, price, category, categoryId: rawCatId, isVeg, isAvailable } = req.body;
+      const categoryId = rawCatId || (category ? String(category).toLowerCase().trim().replace(/\s+/g, '-') : 'general');
       const numPrice = Math.round(Number(price));
       if (isNaN(numPrice) || numPrice < 0) {
         return res.status(400).json({ error: 'Price must be a valid integer number' });
@@ -241,6 +246,7 @@ router.post(
         description: description ? description.trim() : '',
         price: numPrice,
         category: category.trim(),
+        categoryId: String(categoryId).trim(),
         image: imageUrl,
         isVeg: isVeg !== undefined ? (isVeg === 'true' || isVeg === true) : true,
         isAvailable: isAvailable !== undefined ? (isAvailable === 'true' || isAvailable === true) : true,
@@ -281,7 +287,8 @@ router.post(
         let numPrice = Math.round(Number(item.price));
         if (isNaN(numPrice) || numPrice < 0) numPrice = 0;
 
-        let category = item.category ? String(item.category).trim().toLowerCase() : 'snacks';
+        let category = item.category ? String(item.category).trim() : 'snacks';
+        let categoryId = item.categoryId ? String(item.categoryId).trim() : category.toLowerCase().trim().replace(/\s+/g, '-');
         
         let isVeg = true;
         if (item.type !== undefined) {
@@ -301,6 +308,7 @@ router.post(
           description: item.description ? String(item.description).trim() : `Fresh and delicious ${name} prepared to order.`,
           price: numPrice,
           category,
+          categoryId,
           image: imageUrl,
           isVeg,
           isAvailable: item.isAvailable !== false,
@@ -333,12 +341,17 @@ router.post(
 // PUT Update Item
 router.put('/:id', [auth, checkRole(['admin', 'super_admin'])], upload.single('image'), async (req, res) => {
   try {
-    const { name, description, price, category, isVeg, isAvailable } = req.body;
+    const { name, description, price, category, categoryId: rawCatId, isVeg, isAvailable } = req.body;
+      const categoryId = rawCatId || (category ? String(category).toLowerCase().trim().replace(/\s+/g, '-') : 'general');
     let updateData = {};
 
     if (name !== undefined) updateData.name = String(name).trim();
     if (description !== undefined) updateData.description = String(description).trim();
-    if (category !== undefined) updateData.category = String(category).trim();
+    if (category !== undefined) {
+      updateData.category = String(category).trim();
+      if (!req.body.categoryId) updateData.categoryId = String(category).toLowerCase().trim().replace(/\s+/g, '-');
+    }
+    if (req.body.categoryId !== undefined) updateData.categoryId = String(req.body.categoryId).trim();
     if (isVeg !== undefined) updateData.isVeg = (isVeg === 'true' || isVeg === true);
     if (isAvailable !== undefined) updateData.isAvailable = (isAvailable === 'true' || isAvailable === true);
 

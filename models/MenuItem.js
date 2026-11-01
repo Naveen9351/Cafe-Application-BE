@@ -11,6 +11,7 @@ const menuItemSchema = new mongoose.Schema({
   description: { type: String, trim: true },
   price: { type: Number, required: true, min: 0 },
   category: { type: String, default: 'general', index: true },
+  categoryId: { type: String, trim: true, index: true },
   image: { type: String, required: true }, // Cloudinary URL or safe fallback
   isVeg: { type: Boolean, default: true },
   isAvailable: { type: Boolean, default: true },
@@ -44,6 +45,7 @@ const menuItemSchema = new mongoose.Schema({
 
 // Composite indexes for fast tenant menu queries
 menuItemSchema.index({ tenantId: 1, isAvailable: 1, category: 1 });
+menuItemSchema.index({ tenantId: 1, isAvailable: 1, categoryId: 1 });
 menuItemSchema.index({ tenantId: 1, name: 1 });
 
-module.exports = mongoose.model('MenuItem', menuItemSchema);
+module.exports = mongoose.model('MenuItem', menuItemSchema);

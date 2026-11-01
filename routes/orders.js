@@ -139,7 +139,8 @@ router.post(
           dbItem = dbItems.find(i => (i.name || '').trim().toLowerCase() === clientName);
         }
         if (!dbItem && dbItems.length > 0 && (!cId || !mongoose.Types.ObjectId.isValid(cId))) {
-          dbItem = dbItems.find(i => (i.name || '').toLowerCase().includes(clientName) || clientName.includes((i.name || '').toLowerCase()));
+          // Strict exact name match only - never loose substring .includes() to prevent "Tea" and "Ice Tea" collision
+          dbItem = dbItems.find(i => (i.name || '').trim().toLowerCase() === clientName);
         }
 
         if (dbItem) {
