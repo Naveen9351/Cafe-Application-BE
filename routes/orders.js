@@ -686,7 +686,7 @@ router.put('/:id/status', auth, async (req, res) => {
       return res.status(400).json({ error: 'Invalid Order ID' });
     }
 
-    const validStatuses = ['pending', 'preparing', 'ready', 'out_for_delivery', 'completed', 'cancelled'];
+    const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'served', 'out_for_delivery', 'completed', 'cancelled'];
     if (status && !validStatuses.includes(status)) {
       return res.status(400).json({ error: 'Invalid order status value' });
     }
