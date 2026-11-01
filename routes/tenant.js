@@ -121,6 +121,34 @@ router.get('/public/:id', async (req, res) => {
     }
 });
 
+// Update Tenant Settings (Category, Theme etc.) - For Admin/Staff
+// NOTE: Must be defined BEFORE /:id route to prevent route shadowing
+router.put('/settings', auth, async (req, res) => {
+    try {
+        const tenantId = req.user.tenantId || req.tenantId || req.body.tenantId;
+        const { categories, theme, logo, currency, taxPercentage } = req.body;
+
+        const tenant = await Tenant.findById(tenantId);
+        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+
+        if (!tenant.settings) tenant.settings = {};
+
+        // Update fields if provided
+        if (categories && Array.isArray(categories)) tenant.settings.categories = categories;
+        if (theme) tenant.settings.theme = theme;
+        if (logo) tenant.settings.logo = logo;
+        if (currency) tenant.settings.currency = currency;
+        if (taxPercentage !== undefined) tenant.settings.taxPercentage = taxPercentage;
+
+        tenant.markModified('settings');
+        await tenant.save();
+        res.json(tenant.settings);
+    } catch (err) {
+        console.error("Settings update error:", err);
+        res.status(500).json({ error: "Failed to update settings" });
+    }
+});
+
 // Update Tenant Identity & General Settings (Admin/Owner)
 router.put('/:id', auth, async (req, res) => {
     try {
@@ -168,6 +196,14 @@ router.put('/:id', auth, async (req, res) => {
             tenant.settings.enableKhata = Boolean(req.body.settings.enableKhata);
         }
 
+        // Support direct categories update through PUT /:id
+        if (req.body.categories && Array.isArray(req.body.categories)) {
+            tenant.settings.categories = req.body.categories;
+        } else if (req.body.settings?.categories && Array.isArray(req.body.settings.categories)) {
+            tenant.settings.categories = req.body.settings.categories;
+        }
+
+        tenant.markModified('settings');
         await tenant.save();
         res.json(tenant);
     } catch (err) {
@@ -390,29 +426,7 @@ router.get('/:id/subscription-history', auth, async (req, res) => {
     }
 });
 
-// Update Tenant Settings (Category, Theme etc.) - For Admin/Staff
-router.put('/settings', auth, async (req, res) => {
-    try {
-        const tenantId = req.user.tenantId; // From auth middleware
-        const { categories, theme, logo, currency, taxPercentage } = req.body;
 
-        const tenant = await Tenant.findById(tenantId);
-        if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
-
-        // Update fields if provided
-        if (categories) tenant.settings.categories = categories;
-        if (theme) tenant.settings.theme = theme;
-        if (logo) tenant.settings.logo = logo;
-        if (currency) tenant.settings.currency = currency;
-        if (taxPercentage !== undefined) tenant.settings.taxPercentage = taxPercentage;
-
-        await tenant.save();
-        res.json(tenant.settings);
-    } catch (err) {
-        console.error("Settings update error:", err);
-        res.status(500).json({ error: "Failed to update settings" });
-    }
-});
 
 // Delete Tenant (Super Admin Only)
 // Cascades deletion to matching Onboarding Applications, Users, Orders, Menu Items, and Tables

@@ -235,8 +235,9 @@ router.post(
         }
       }
 
+      const itemTenantId = req.body.tenantId || req.headers['x-tenant-id'] || req.tenantId || req.user?.tenantId || '6a762ef86c9d5c8be315f10a';
       const newItem = new MenuItem({
-        tenantId: req.tenantId || req.user?.tenantId || '6a762ef86c9d5c8be315f10a',
+        tenantId: itemTenantId,
         name: name.trim(),
         description: description ? description.trim() : '',
         price: numPrice,
@@ -270,7 +271,7 @@ router.post(
         return res.status(400).json({ error: 'No menu items provided for bulk insert' });
       }
 
-      const tenantId = req.tenantId || req.user?.tenantId || '6a762ef86c9d5c8be315f10a';
+      const tenantId = req.body.tenantId || req.headers['x-tenant-id'] || req.tenantId || req.user?.tenantId || '6a762ef86c9d5c8be315f10a';
 
       const validDocs = [];
       for (const item of rawItems) {
