@@ -1,3 +1,4 @@
+const { generateMeaningfulOrderNumber } = require('../utils/orderNumberGenerator');
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
@@ -404,6 +405,7 @@ router.post('/aggregator-webhook-mock', auth, async (req, res) => {
 
     const mockOrder = new Order({
       tenantId: req.tenantId,
+      orderNumber: generateMeaningfulOrderNumber({ customerName: customerName || 'Online', date: new Date() }),
       tableNumber: `Online (${platform})`,
       orderType: 'online',
       items: orderItems,

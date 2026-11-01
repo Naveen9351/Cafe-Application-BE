@@ -241,10 +241,16 @@ router.post(
       let calculatedPaymentStatus = paymentStatus || (initialPaidAmount >= total && total > 0 ? 'paid' : (initialPaidAmount > 0 ? 'partial' : 'pending'));
       const finalStatus = req.body.isDirect ? 'served' : (status || 'pending');
 
-      // 3. Create Order
+      // 3. Create Order with Meaningful Compact ID (e.g. NAV-2204)
+      const effectiveCustName = customerDetails?.name || req.body.customerName || 'Guest';
+      const generatedOrderNumber = req.body.orderNumber || generateMeaningfulOrderNumber({
+        customerName: effectiveCustName,
+        date: new Date()
+      });
+
       const newOrder = new Order({
         tenantId,
-        orderNumber: `${Math.floor(1000 + Math.random() * 9000)}`,
+        orderNumber: generatedOrderNumber,
         tableNumber: tableNumber || 'Counter',
         items: orderItems,
         subTotal,
@@ -598,6 +604,15 @@ router.get('/', auth, async (req, res) => {
         .limit(limitNum)
         .lean();
 
+      orders.forEach(o => {
+        if (!o.orderNumber) {
+          o.orderNumber = generateMeaningfulOrderNumber({
+            customerName: o.customerDetails?.name || o.customerName || 'Guest',
+            date: o.createdAt || new Date()
+          });
+        }
+      });
+
       return res.json({
         orders,
         total,
@@ -614,6 +629,14 @@ router.get('/', auth, async (req, res) => {
       ordersQuery = ordersQuery.limit(maxLimit);
     }
     const orders = await ordersQuery.lean();
+    orders.forEach(o => {
+      if (!o.orderNumber) {
+        o.orderNumber = generateMeaningfulOrderNumber({
+          customerName: o.customerDetails?.name || o.customerName || 'Guest',
+          date: o.createdAt || new Date()
+        });
+      }
+    });
 
     res.json(orders);
   } catch (err) {
