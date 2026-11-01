@@ -286,17 +286,20 @@ router.get('/customers', auth, async (req, res) => {
     // Backfill any customers from orders who may not be in the Customer collection yet
     for (const [phone, phoneOrders] of Object.entries(ordersByPhone)) {
       let cust = customers.find(c => c.phone === phone);
+      const validPhoneOrders = phoneOrders.filter(o => o.status !== 'cancelled');
+      const totalSpent = validPhoneOrders.reduce((sum, o) => sum + (Number(o.settledAmount || o.total) || 0), 0);
+      const visitCount = validPhoneOrders.length;
+
       if (!cust) {
         const firstOrd = phoneOrders[phoneOrders.length - 1];
         const lastOrd = phoneOrders[0];
-        const totalSpent = phoneOrders.reduce((sum, o) => sum + (Number(o.settledAmount || o.total) || 0), 0);
         const newCust = new Customer({
           tenantId: tenantId || firstOrd.tenantId,
           name: lastOrd.customerDetails?.name || 'Walk-in Guest',
           phone,
           loyaltyPoints: Math.round(totalSpent * 0.05),
           totalSpent,
-          visitCount: phoneOrders.length,
+          visitCount,
           isPhoneVerified: Boolean(lastOrd.customerDetails?.isPhoneVerified),
           firstVisit: firstOrd.createdAt || new Date(),
           lastVisit: lastOrd.createdAt || new Date()
@@ -306,17 +309,24 @@ router.get('/customers', auth, async (req, res) => {
       }
     }
 
-    // Build enriched customer objects
+    // Build enriched customer objects (strictly excluding cancelled orders from visits and lifetime spend)
     const enriched = customers.map(cust => {
       const custObj = cust.toObject ? cust.toObject() : cust;
       const phoneClean = String(cust.phone || '').replace(/[^0-9]/g, '');
       const custOrders = ordersByPhone[phoneClean] || [];
+      const validOrders = custOrders.filter(o => o.status !== 'cancelled');
 
-      const totalVisits = Math.max(cust.visitCount || 0, custOrders.length);
+      // Lifetime spend and visits must strictly exclude cancelled orders
+      const totalVisits = custOrders.length > 0 ? validOrders.length : (cust.visitCount || 0);
       const lifetimeSpend = custOrders.length > 0 
-        ? custOrders.reduce((sum, o) => sum + (Number(o.settledAmount || o.total) || 0), 0)
+        ? validOrders.reduce((sum, o) => sum + (Number(o.settledAmount || o.total) || 0), 0)
         : (cust.totalSpent || 0);
       const aov = totalVisits > 0 ? Math.round(lifetimeSpend / totalVisits) : 0;
+
+      // Sync customer document in database if past cancelled orders caused discrepancy
+      if (cust._id && custOrders.length > 0 && (cust.totalSpent !== lifetimeSpend || cust.visitCount !== totalVisits)) {
+        Customer.updateOne({ _id: cust._id }, { $set: { totalSpent: lifetimeSpend, visitCount: totalVisits } }).catch(() => {});
+      }
 
       const firstVisit = cust.firstVisit || (custOrders.length > 0 ? custOrders[custOrders.length - 1].createdAt : cust.createdAt);
       const lastVisit = cust.lastVisit || (custOrders.length > 0 ? custOrders[0].createdAt : cust.createdAt);

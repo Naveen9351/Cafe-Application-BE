@@ -9,6 +9,8 @@ const mongoose = require('mongoose');
 const deductStockForOrder = require('../utils/stockDeductor');
 const Customer = require('../models/Customer');
 const Table = require('../models/Table');
+const Tenant = require('../models/Tenant');
+const { generateMeaningfulOrderNumber } = require('../utils/orderNumberGenerator');
 
 // Helper to calculate date boundaries
 const getDateRangeFilter = (range, startDate, endDate) => {
@@ -291,7 +293,7 @@ router.get('/active-session', async (req, res) => {
 
     const recentWindow = new Date(Date.now() - 4 * 60 * 60 * 1000);
     let queryConditions = {
-      status: { $in: ['pending', 'confirmed', 'preparing', 'ready'] },
+      status: { $in: ['pending', 'confirmed', 'preparing', 'ready', 'served'] },
       createdAt: { $gte: recentWindow }
     };
 
@@ -319,7 +321,7 @@ router.get('/active-session', async (req, res) => {
     // Attach all active/unsettled session orders for this dining table
     const sessionOrders = await Order.find({
       tenantId: activeOrder.tenantId?._id || activeOrder.tenantId,
-      status: { $in: ['pending', 'confirmed', 'preparing', 'ready'] },
+      status: { $in: ['pending', 'confirmed', 'preparing', 'ready', 'served'] },
       paymentStatus: { $ne: 'paid' },
       createdAt: { $gte: recentWindow },
       $or: [
@@ -704,6 +706,12 @@ router.put('/:id/status', auth, async (req, res) => {
       updateFields.estimatedTime = Number(estimatedTime) > 0 ? Number(estimatedTime) : null;
     }
 
+    const existingOrder = await Order.findOne(filter);
+    if (!existingOrder) return res.status(404).json({ error: 'Order not found or unauthorized' });
+
+    const wasCancelledBefore = existingOrder.status === 'cancelled';
+    const isNowCancelled = status === 'cancelled';
+
     const order = await Order.findOneAndUpdate(
       filter,
       updateFields,
@@ -711,6 +719,35 @@ router.put('/:id/status', auth, async (req, res) => {
     );
 
     if (!order) return res.status(404).json({ error: 'Order not found or unauthorized' });
+
+    // If order was newly cancelled, adjust customer metrics if customer exists
+    if (!wasCancelledBefore && isNowCancelled && order && order.customerDetails?.phone) {
+      try {
+        const cleanPhone = String(order.customerDetails.phone).replace(/[^0-9]/g, '');
+        const orderAmount = Number(order.settledAmount || order.total || 0);
+        const pts = order.loyaltyPointsEarned || Math.round((order.subTotal || 0) * 0.05);
+
+        await Customer.findOneAndUpdate(
+          { tenantId: order.tenantId, phone: cleanPhone },
+          {
+            $inc: {
+              totalSpent: -orderAmount,
+              visitCount: -1,
+              loyaltyPoints: -pts
+            }
+          }
+        );
+        const targetCust = await Customer.findOne({ tenantId: order.tenantId, phone: cleanPhone });
+        if (targetCust) {
+          if (targetCust.totalSpent < 0) targetCust.totalSpent = 0;
+          if (targetCust.visitCount < 0) targetCust.visitCount = 0;
+          if (targetCust.loyaltyPoints < 0) targetCust.loyaltyPoints = 0;
+          await targetCust.save();
+        }
+      } catch (crmErr) {
+        console.error('Error adjusting customer for cancelled order:', crmErr);
+      }
+    }
 
     // Emit update to tenant room
     if (global.io && order.tenantId) {
@@ -817,7 +854,7 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
   try {
     const rawTable = String(req.params.tableNumber).trim();
     const numOnly = rawTable.replace(/[^0-9]/g, '') || rawTable;
-    const { paymentMethod, paymentStatus, actualAmount, settledAmount, mergedTables } = req.body;
+    const { paymentMethod, paymentStatus, actualAmount, settledAmount, mergedTables, orderIds } = req.body;
 
     let tenantId = req.user.tenantId;
     if (req.user.role === 'super_admin' && req.body.tenantId) {

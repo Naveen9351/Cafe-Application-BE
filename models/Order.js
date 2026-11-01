@@ -13,6 +13,7 @@ const orderSchema = new mongoose.Schema({
     sparse: true
   },
   // Table number is now tenant-specific string or ID
+  orderNumber: { type: String, index: true, trim: true },
   tableNumber: { type: String, required: true },
 
   // Who took the order (optional, could be self-service via QR)
