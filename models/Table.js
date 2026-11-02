@@ -14,6 +14,11 @@ const TableSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  section: {
+    type: String,
+    default: 'Main Hall',
+    trim: true
+  },
   seatingCapacity: {
     type: Number,
     default: 4

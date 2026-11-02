@@ -47,7 +47,7 @@ router.get('/', async (req, res) => {
 router.post('/', [auth, checkRole(['admin', 'super_admin'])], async (req, res) => {
   try {
     const tenantId = req.user.tenantId || req.tenantId;
-    const { tableNumber, seatingCapacity, status } = req.body;
+    const { tableNumber, seatingCapacity, status, section } = req.body;
 
     if (!tenantId) {
       return res.status(400).json({ error: 'Tenant ID required' });
@@ -120,6 +120,7 @@ router.put('/:id', [auth, checkRole(['admin', 'super_admin'])], async (req, res)
     }
 
     if (seatingCapacity !== undefined) updateData.seatingCapacity = Number(seatingCapacity);
+    if (section !== undefined) updateData.section = String(section).trim();
     if (status !== undefined) updateData.status = status;
 
     const updatedTable = await Table.findOneAndUpdate(filter, updateData, { new: true });
