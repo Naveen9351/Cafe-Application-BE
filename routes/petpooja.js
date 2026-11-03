@@ -403,9 +403,17 @@ router.post('/aggregator-webhook-mock', auth, async (req, res) => {
     const taxAmount = subTotal * 0.05;
     const finalTotal = subTotal + taxAmount;
 
+    const baseOrderNum = generateMeaningfulOrderNumber({ customerName: customerName || 'Online', date: new Date() });
+    let uniqueOrderNum = baseOrderNum;
+    let collisionIdx = 1;
+    while (await Order.exists({ tenantId: req.tenantId, orderNumber: uniqueOrderNum })) {
+      uniqueOrderNum = `${baseOrderNum}-${collisionIdx}`;
+      collisionIdx++;
+    }
+
     const mockOrder = new Order({
       tenantId: req.tenantId,
-      orderNumber: generateMeaningfulOrderNumber({ customerName: customerName || 'Online', date: new Date() }),
+      orderNumber: uniqueOrderNum,
       tableNumber: `Online (${platform})`,
       orderType: 'online',
       items: orderItems,

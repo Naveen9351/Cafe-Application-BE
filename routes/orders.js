@@ -243,14 +243,22 @@ router.post(
 
       // 3. Create Order with Meaningful Compact ID (e.g. NAV-2204)
       const effectiveCustName = customerDetails?.name || req.body.customerName || 'Guest';
-      const generatedOrderNumber = req.body.orderNumber || generateMeaningfulOrderNumber({
+      const baseOrderNumber = req.body.orderNumber || generateMeaningfulOrderNumber({
         customerName: effectiveCustName,
         date: new Date()
       });
 
+      // Strict Zero-Collision Check: Ensure orderNumber is 100% unique for this tenant
+      let uniqueOrderNumber = baseOrderNumber;
+      let collisionIndex = 1;
+      while (await Order.exists({ tenantId, orderNumber: uniqueOrderNumber })) {
+        uniqueOrderNumber = `${baseOrderNumber}-${collisionIndex}`;
+        collisionIndex++;
+      }
+
       const newOrder = new Order({
         tenantId,
-        orderNumber: generatedOrderNumber,
+        orderNumber: uniqueOrderNumber,
         tableNumber: tableNumber || 'Counter',
         items: orderItems,
         subTotal,
