@@ -625,12 +625,68 @@ router.get('/', auth, async (req, res) => {
         }
       });
 
+      // Compute database aggregate summary stats for tenant (independent of current pagination page)
+      const tenantMatch = tenantId ? { tenantId } : {};
+      const statsAgg = await Order.aggregate([
+        { $match: tenantMatch },
+        {
+          $group: {
+            _id: null,
+            totalOrders: { $sum: 1 },
+            completedCount: { $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] } },
+            cancelledCount: { $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] } },
+            activeCount: {
+              $sum: {
+                $cond: [{ $not: { $in: ['$status', ['completed', 'cancelled']] } }, 1, 0]
+              }
+            },
+            pendingCount: { $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] } },
+            totalSales: {
+              $sum: {
+                $cond: [
+                  { $eq: ['$status', 'completed'] },
+                  { $ifNull: ['$total', { $ifNull: ['$totalAmount', 0] }] },
+                  0
+                ]
+              }
+            }
+          }
+        }
+      ]);
+
+      const stats = statsAgg[0] || {
+        totalOrders: total,
+        completedCount: 0,
+        cancelledCount: 0,
+        activeCount: 0,
+        pendingCount: 0,
+        totalSales: 0
+      };
+
+      const totalCount = stats.totalOrders || total || 0;
+      const completedRate = totalCount > 0 ? Math.round((stats.completedCount / totalCount) * 100) : 0;
+      const cancelledRate = totalCount > 0 ? Math.round((stats.cancelledCount / totalCount) * 100) : 0;
+      const aov = stats.completedCount > 0 ? Math.round(stats.totalSales / stats.completedCount) : 0;
+
+      const summary = {
+        totalOrders: totalCount,
+        completedCount: stats.completedCount,
+        completedRate,
+        activeOrdersCount: stats.activeCount,
+        pendingCount: stats.pendingCount,
+        totalRevenue: stats.totalSales,
+        aov,
+        cancelledCount: stats.cancelledCount,
+        cancelledRate
+      };
+
       return res.json({
         orders,
         total,
         page: pageNum,
         limit: limitNum,
-        totalPages: Math.ceil(total / limitNum) || 1
+        totalPages: Math.ceil(total / limitNum) || 1,
+        summary
       });
     }
 
