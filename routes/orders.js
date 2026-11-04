@@ -367,6 +367,7 @@ router.get('/status/:id', async (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
 
+    const isCurrentPaid = order.paymentStatus === 'paid';
     const orderTenantId = order.tenantId?._id || order.tenantId;
     const queryConditions = [{ _id: order._id }];
 
@@ -378,18 +379,21 @@ router.get('/status/:id', async (req, res) => {
         .filter(s => mongoose.Types.ObjectId.isValid(s));
 
       if (ids.length > 0) {
-        queryConditions.push({ _id: { $in: ids } });
+        queryConditions.push({
+          _id: { $in: ids },
+          ...(isCurrentPaid ? { paymentStatus: 'paid' } : { paymentStatus: { $ne: 'paid' } })
+        });
       }
     }
 
-    // Automatically find all active un-settled orders for this table in the current dining session
-    if (order.tableNumber && !['Takeaway', 'Counter', 'Online Order', 'Walk-in'].includes(order.tableNumber)) {
+    // Automatically find all active un-settled orders for this table in the current dining session (includes Direct 'served' orders)
+    if (!isCurrentPaid && order.tableNumber && !['Takeaway', 'Counter', 'Online Order', 'Walk-in'].includes(order.tableNumber)) {
       const recentWindow = new Date(Date.now() - 6 * 60 * 60 * 1000);
       queryConditions.push({
         tenantId: orderTenantId,
         tableNumber: String(order.tableNumber).trim(),
         createdAt: { $gte: recentWindow },
-        status: { $in: ['pending', 'confirmed', 'preparing', 'ready', 'completed'] },
+        status: { $in: ['pending', 'confirmed', 'preparing', 'ready', 'served', 'completed'] },
         paymentStatus: { $ne: 'paid' }
       });
     }
