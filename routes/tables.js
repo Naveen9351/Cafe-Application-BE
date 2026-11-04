@@ -71,6 +71,7 @@ router.post('/', [auth, checkRole(['admin', 'super_admin'])], async (req, res) =
     const newTable = new Table({
       tenantId,
       tableNumber: cleanTableNumber,
+      section: (section && String(section).trim()) || 'Main Hall',
       seatingCapacity: Number(seatingCapacity) || 4,
       status: status || 'available'
     });
@@ -87,7 +88,7 @@ router.post('/', [auth, checkRole(['admin', 'super_admin'])], async (req, res) =
 router.put('/:id', [auth, checkRole(['admin', 'super_admin'])], async (req, res) => {
   try {
     const tenantId = req.user.tenantId || req.tenantId;
-    const { tableNumber, seatingCapacity, status } = req.body;
+    const { tableNumber, seatingCapacity, status, section } = req.body;
 
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ error: 'Invalid Table ID' });
