@@ -15,6 +15,11 @@ const menuItemSchema = new mongoose.Schema({
   image: { type: String, required: true }, // Cloudinary URL or safe fallback
   isVeg: { type: Boolean, default: true },
   isAvailable: { type: Boolean, default: true },
+  isOpenMenu: { type: Boolean, default: false }, // Open Menu: Hidden from customer QR menu, only visible to restaurant owner / POS cashier (e.g. cigarettes, off-menu items)
+  isPosOnly: { type: Boolean, default: false }, // Backward-compatible alias for isOpenMenu
+  shiftAvailability: { type: String, enum: ['all_day', 'day_only', 'night_only'], default: 'all_day', index: true }, // Shift availability: All Day, Day Only, or Night Only
+  isNightMenu: { type: Boolean, default: false }, // Backward-compatible night tag
+  nightPrice: { type: Number }, // Optional custom night price override
   discount: {
     isDiscounted: { type: Boolean, default: false },
     type: { type: String, enum: ['percentage', 'amount'], default: 'percentage' },

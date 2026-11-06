@@ -215,6 +215,26 @@ router.put('/:id', auth, async (req, res) => {
         } else if (req.body.settings?.enableKhata !== undefined) {
             tenant.settings.enableKhata = Boolean(req.body.settings.enableKhata);
         }
+        if (req.body.language !== undefined) {
+            tenant.settings.language = req.body.language;
+        } else if (req.body.settings?.language !== undefined) {
+            tenant.settings.language = req.body.settings.language;
+        }
+        if (req.body.enableNightMenu !== undefined) {
+            tenant.settings.enableNightMenu = Boolean(req.body.enableNightMenu);
+        } else if (req.body.settings?.enableNightMenu !== undefined) {
+            tenant.settings.enableNightMenu = Boolean(req.body.settings.enableNightMenu);
+        }
+        if (req.body.nightMenuStart !== undefined) {
+            tenant.settings.nightMenuStart = String(req.body.nightMenuStart);
+        } else if (req.body.settings?.nightMenuStart !== undefined) {
+            tenant.settings.nightMenuStart = String(req.body.settings.nightMenuStart);
+        }
+        if (req.body.nightMenuEnd !== undefined) {
+            tenant.settings.nightMenuEnd = String(req.body.nightMenuEnd);
+        } else if (req.body.settings?.nightMenuEnd !== undefined) {
+            tenant.settings.nightMenuEnd = String(req.body.settings.nightMenuEnd);
+        }
 
         await tenant.save();
         res.json(tenant);

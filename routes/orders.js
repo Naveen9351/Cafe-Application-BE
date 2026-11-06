@@ -626,26 +626,40 @@ router.get('/', auth, async (req, res) => {
       });
 
       // Compute database aggregate summary stats for tenant (independent of current pagination page)
-      const tenantMatch = tenantId ? { tenantId } : {};
+      let tenantMatch = {};
+      if (tenantId) {
+        try {
+          const objId = new mongoose.Types.ObjectId(tenantId);
+          tenantMatch = {
+            $or: [
+              { tenantId: objId },
+              { tenantId: String(tenantId) }
+            ]
+          };
+        } catch (e) {
+          tenantMatch = { tenantId };
+        }
+      }
+
       const statsAgg = await Order.aggregate([
         { $match: tenantMatch },
         {
           $group: {
             _id: null,
             totalOrders: { $sum: 1 },
-            completedCount: { $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] } },
+            completedCount: { $sum: { $cond: [{ $in: ['$status', ['completed', 'served']] }, 1, 0] } },
             cancelledCount: { $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] } },
             activeCount: {
               $sum: {
-                $cond: [{ $not: { $in: ['$status', ['completed', 'cancelled']] } }, 1, 0]
+                $cond: [{ $not: { $in: ['$status', ['completed', 'served', 'cancelled']] } }, 1, 0]
               }
             },
             pendingCount: { $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] } },
             totalSales: {
               $sum: {
                 $cond: [
-                  { $eq: ['$status', 'completed'] },
-                  { $ifNull: ['$total', { $ifNull: ['$totalAmount', 0] }] },
+                  { $in: ['$status', ['completed', 'served']] },
+                  { $ifNull: ['$total', { $ifNull: ['$totalAmount', { $ifNull: ['$finalAmount', 0] }] }] },
                   0
                 ]
               }

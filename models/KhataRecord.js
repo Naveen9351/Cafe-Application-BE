@@ -11,11 +11,18 @@ const khataRecordSchema = new mongoose.Schema({
         ref: 'Order'
     },
     orderNumber: { type: String },
-    customerName: { type: String, required: true, trim: true },
-    customerPhone: { type: String, required: true, trim: true },
+    customerName: { type: String, default: 'Guest', trim: true },
+    customerPhone: { type: String, default: 'N/A', trim: true },
     totalBill: { type: Number, required: true },
     paidAmount: { type: Number, default: 0 },
     borrowAmount: { type: Number, required: true }, // Outstanding amount
+    items: [
+        {
+            name: { type: String },
+            quantity: { type: Number, default: 1 },
+            price: { type: Number, default: 0 }
+        }
+    ],
     status: {
         type: String,
         enum: ['pending', 'partially_settled', 'settled'],

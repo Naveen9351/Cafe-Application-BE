@@ -95,11 +95,39 @@ const deleteCloudinaryImage = async (imageUrl) => {
 // GET Public Menu (Filter by Tenant)
 router.get('/', async (req, res) => {
   try {
-    const { tenantId, category, categoryId, search, includeUnavailable } = req.query;
+    const { tenantId, category, categoryId, search, includeUnavailable, includePosOnly } = req.query;
 
     let query = {};
     if (includeUnavailable !== 'true') {
       query.isAvailable = true;
+    }
+
+    // Open Menu vs Public QR Menu:
+    // Open Menu (cigarettes, off-menu counter items) is strictly hidden from customer QR code menu!
+    // Night Menu is visible to customers based on shift/timing!
+    if (includePosOnly !== 'true') {
+      query.$and = query.$and || [];
+      query.$and.push({
+        isOpenMenu: { $ne: true },
+        isPosOnly: { $ne: true }
+      });
+      // Shift-based availability filter for customer QR menu
+      if (req.query.shift === 'day') {
+        query.$and.push({ shiftAvailability: { $ne: 'night_only' } });
+      } else if (req.query.shift === 'night') {
+        query.$and.push({ shiftAvailability: { $ne: 'day_only' } });
+      }
+    } else {
+      // For POS / Owner terminal: allow quick filtering by menu type
+      if (req.query.isOpenMenuOnly === 'true') {
+        query.$or = [{ isOpenMenu: true }, { isPosOnly: true }];
+      } else if (req.query.isNightMenuOnly === 'true') {
+        query.$or = [
+          { shiftAvailability: 'night_only' },
+          { isNightMenu: true },
+          { nightPrice: { $gt: 0 } }
+        ];
+      }
     }
 
     if (tenantId) query.tenantId = tenantId;
@@ -171,6 +199,15 @@ router.post(
       if (isNaN(numPrice) || numPrice < 0) {
         return res.status(400).json({ error: 'Price must be a valid integer number' });
       }
+
+      // Parse & Validate Open Menu and Shift Availability
+      const isOpenMenu = req.body.isOpenMenu === 'true' || req.body.isOpenMenu === true || req.body.isPosOnly === 'true' || req.body.isPosOnly === true;
+      const shiftAvailability = ['all_day', 'day_only', 'night_only'].includes(req.body.shiftAvailability)
+        ? req.body.shiftAvailability
+        : (req.body.isNightMenu === 'true' || req.body.isNightMenu === true ? 'night_only' : 'all_day');
+      const nightPrice = req.body.nightPrice !== undefined && req.body.nightPrice !== '' && !isNaN(Number(req.body.nightPrice))
+        ? Math.round(Number(req.body.nightPrice))
+        : undefined;
 
       // Parse & Validate Discount
       let discountObj = { isDiscounted: false, type: 'percentage', value: 0 };
@@ -252,7 +289,12 @@ router.post(
         isAvailable: isAvailable !== undefined ? (isAvailable === 'true' || isAvailable === true) : true,
         discount: discountObj,
         variants: variantsArr,
-        addons: addonsArr
+        addons: addonsArr,
+        isOpenMenu,
+        isPosOnly: isOpenMenu,
+        shiftAvailability,
+        isNightMenu: shiftAvailability === 'night_only' || (Boolean(nightPrice) && nightPrice > 0),
+        nightPrice
       });
 
       await newItem.save();
@@ -354,6 +396,29 @@ router.put('/:id', [auth, checkRole(['admin', 'super_admin'])], upload.single('i
     if (req.body.categoryId !== undefined) updateData.categoryId = String(req.body.categoryId).trim();
     if (isVeg !== undefined) updateData.isVeg = (isVeg === 'true' || isVeg === true);
     if (isAvailable !== undefined) updateData.isAvailable = (isAvailable === 'true' || isAvailable === true);
+    if (req.body.isOpenMenu !== undefined || req.body.isPosOnly !== undefined) {
+      const openVal = req.body.isOpenMenu !== undefined 
+        ? (req.body.isOpenMenu === 'true' || req.body.isOpenMenu === true)
+        : (req.body.isPosOnly === 'true' || req.body.isPosOnly === true);
+      updateData.isOpenMenu = openVal;
+      updateData.isPosOnly = openVal;
+    }
+    if (req.body.shiftAvailability !== undefined) {
+      if (['all_day', 'day_only', 'night_only'].includes(req.body.shiftAvailability)) {
+        updateData.shiftAvailability = req.body.shiftAvailability;
+        updateData.isNightMenu = req.body.shiftAvailability === 'night_only';
+      }
+    } else if (req.body.isNightMenu !== undefined) {
+      const isNight = (req.body.isNightMenu === 'true' || req.body.isNightMenu === true);
+      updateData.isNightMenu = isNight;
+      if (isNight && (!updateData.shiftAvailability || updateData.shiftAvailability === 'all_day')) {
+        updateData.shiftAvailability = 'night_only';
+      }
+    }
+    if (req.body.nightPrice !== undefined) {
+      updateData.nightPrice = req.body.nightPrice !== '' && !isNaN(Number(req.body.nightPrice)) ? Math.round(Number(req.body.nightPrice)) : null;
+      if (updateData.nightPrice > 0) updateData.isNightMenu = true;
+    }
 
     if (price !== undefined) {
       const numPrice = Math.round(Number(price));

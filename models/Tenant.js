@@ -49,6 +49,10 @@ const tenantSchema = new mongoose.Schema({
     logo: { type: String }, // URL to logo
     enableEstimatedPrepTime: { type: Boolean, default: false }, // Kitchen prep time estimation toggle (default OFF)
     enableKhata: { type: Boolean, default: false }, // Indian customer credit / borrow (Udhari) toggle (default OFF)
+    language: { type: String, default: 'en' }, // 'en' or 'hi'
+    enableNightMenu: { type: Boolean, default: false }, // Special Open/Night Menu (POS Only)
+    nightMenuStart: { type: String, default: '22:00' }, // Night menu start time e.g. 10:00 PM
+    nightMenuEnd: { type: String, default: '05:00' }, // Night menu end time e.g. 05:00 AM
     categories: {
       type: [{ name: String, id: String, icon: String }],
       default: [
