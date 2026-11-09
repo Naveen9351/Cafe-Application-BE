@@ -9,6 +9,8 @@ const mongoose = require('mongoose');
 const deductStockForOrder = require('../utils/stockDeductor');
 const Customer = require('../models/Customer');
 const Table = require('../models/Table');
+const Tenant = require('../models/Tenant');
+const { generateMeaningfulOrderNumber } = require('../utils/orderNumberGenerator');
 
 // Helper to calculate date boundaries
 const getDateRangeFilter = (range, startDate, endDate) => {
@@ -139,7 +141,8 @@ router.post(
           dbItem = dbItems.find(i => (i.name || '').trim().toLowerCase() === clientName);
         }
         if (!dbItem && dbItems.length > 0 && (!cId || !mongoose.Types.ObjectId.isValid(cId))) {
-          dbItem = dbItems.find(i => (i.name || '').toLowerCase().includes(clientName) || clientName.includes((i.name || '').toLowerCase()));
+          // Strict exact name match only - never loose substring .includes() to prevent "Tea" and "Ice Tea" collision
+          dbItem = dbItems.find(i => (i.name || '').trim().toLowerCase() === clientName);
         }
 
         if (dbItem) {
@@ -238,10 +241,24 @@ router.post(
       let calculatedPaymentStatus = paymentStatus || (initialPaidAmount >= total && total > 0 ? 'paid' : (initialPaidAmount > 0 ? 'partial' : 'pending'));
       const finalStatus = req.body.isDirect ? 'served' : (status || 'pending');
 
-      // 3. Create Order
+      // 3. Create Order with Meaningful Compact ID (e.g. NAV-2204)
+      const effectiveCustName = customerDetails?.name || req.body.customerName || 'Guest';
+      const baseOrderNumber = req.body.orderNumber || generateMeaningfulOrderNumber({
+        customerName: effectiveCustName,
+        date: new Date()
+      });
+
+      // Strict Zero-Collision Check: Ensure orderNumber is 100% unique for this tenant
+      let uniqueOrderNumber = baseOrderNumber;
+      let collisionIndex = 1;
+      while (await Order.exists({ tenantId, orderNumber: uniqueOrderNumber })) {
+        uniqueOrderNumber = `${baseOrderNumber}-${collisionIndex}`;
+        collisionIndex++;
+      }
+
       const newOrder = new Order({
         tenantId,
-        orderNumber: `${Math.floor(1000 + Math.random() * 9000)}`,
+        orderNumber: uniqueOrderNumber,
         tableNumber: tableNumber || 'Counter',
         items: orderItems,
         subTotal,
@@ -290,7 +307,7 @@ router.get('/active-session', async (req, res) => {
 
     const recentWindow = new Date(Date.now() - 4 * 60 * 60 * 1000);
     let queryConditions = {
-      status: { $in: ['pending', 'confirmed', 'preparing', 'ready'] },
+      status: { $in: ['pending', 'confirmed', 'preparing', 'ready', 'served'] },
       createdAt: { $gte: recentWindow }
     };
 
@@ -318,7 +335,7 @@ router.get('/active-session', async (req, res) => {
     // Attach all active/unsettled session orders for this dining table
     const sessionOrders = await Order.find({
       tenantId: activeOrder.tenantId?._id || activeOrder.tenantId,
-      status: { $in: ['pending', 'confirmed', 'preparing', 'ready'] },
+      status: { $in: ['pending', 'confirmed', 'preparing', 'ready', 'served'] },
       paymentStatus: { $ne: 'paid' },
       createdAt: { $gte: recentWindow },
       $or: [
@@ -350,6 +367,7 @@ router.get('/status/:id', async (req, res) => {
       return res.status(404).json({ error: 'Order not found' });
     }
 
+    const isCurrentPaid = order.paymentStatus === 'paid';
     const orderTenantId = order.tenantId?._id || order.tenantId;
     const queryConditions = [{ _id: order._id }];
 
@@ -361,18 +379,21 @@ router.get('/status/:id', async (req, res) => {
         .filter(s => mongoose.Types.ObjectId.isValid(s));
 
       if (ids.length > 0) {
-        queryConditions.push({ _id: { $in: ids } });
+        queryConditions.push({
+          _id: { $in: ids },
+          ...(isCurrentPaid ? { paymentStatus: 'paid' } : { paymentStatus: { $ne: 'paid' } })
+        });
       }
     }
 
-    // Automatically find all active un-settled orders for this table in the current dining session
-    if (order.tableNumber && !['Takeaway', 'Counter', 'Online Order', 'Walk-in'].includes(order.tableNumber)) {
+    // Automatically find all active un-settled orders for this table in the current dining session (includes Direct 'served' orders)
+    if (!isCurrentPaid && order.tableNumber && !['Takeaway', 'Counter', 'Online Order', 'Walk-in'].includes(order.tableNumber)) {
       const recentWindow = new Date(Date.now() - 6 * 60 * 60 * 1000);
       queryConditions.push({
         tenantId: orderTenantId,
         tableNumber: String(order.tableNumber).trim(),
         createdAt: { $gte: recentWindow },
-        status: { $in: ['pending', 'confirmed', 'preparing', 'ready', 'completed'] },
+        status: { $in: ['pending', 'confirmed', 'preparing', 'ready', 'served', 'completed'] },
         paymentStatus: { $ne: 'paid' }
       });
     }
@@ -595,12 +616,91 @@ router.get('/', auth, async (req, res) => {
         .limit(limitNum)
         .lean();
 
+      orders.forEach(o => {
+        if (!o.orderNumber) {
+          o.orderNumber = generateMeaningfulOrderNumber({
+            customerName: o.customerDetails?.name || o.customerName || 'Guest',
+            date: o.createdAt || new Date()
+          });
+        }
+      });
+
+      // Compute database aggregate summary stats for tenant (independent of current pagination page)
+      let tenantMatch = {};
+      if (tenantId) {
+        try {
+          const objId = new mongoose.Types.ObjectId(tenantId);
+          tenantMatch = {
+            $or: [
+              { tenantId: objId },
+              { tenantId: String(tenantId) }
+            ]
+          };
+        } catch (e) {
+          tenantMatch = { tenantId };
+        }
+      }
+
+      const statsAgg = await Order.aggregate([
+        { $match: tenantMatch },
+        {
+          $group: {
+            _id: null,
+            totalOrders: { $sum: 1 },
+            completedCount: { $sum: { $cond: [{ $in: ['$status', ['completed', 'served']] }, 1, 0] } },
+            cancelledCount: { $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] } },
+            activeCount: {
+              $sum: {
+                $cond: [{ $not: { $in: ['$status', ['completed', 'served', 'cancelled']] } }, 1, 0]
+              }
+            },
+            pendingCount: { $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] } },
+            totalSales: {
+              $sum: {
+                $cond: [
+                  { $in: ['$status', ['completed', 'served']] },
+                  { $ifNull: ['$total', { $ifNull: ['$totalAmount', { $ifNull: ['$finalAmount', 0] }] }] },
+                  0
+                ]
+              }
+            }
+          }
+        }
+      ]);
+
+      const stats = statsAgg[0] || {
+        totalOrders: total,
+        completedCount: 0,
+        cancelledCount: 0,
+        activeCount: 0,
+        pendingCount: 0,
+        totalSales: 0
+      };
+
+      const totalCount = stats.totalOrders || total || 0;
+      const completedRate = totalCount > 0 ? Math.round((stats.completedCount / totalCount) * 100) : 0;
+      const cancelledRate = totalCount > 0 ? Math.round((stats.cancelledCount / totalCount) * 100) : 0;
+      const aov = stats.completedCount > 0 ? Math.round(stats.totalSales / stats.completedCount) : 0;
+
+      const summary = {
+        totalOrders: totalCount,
+        completedCount: stats.completedCount,
+        completedRate,
+        activeOrdersCount: stats.activeCount,
+        pendingCount: stats.pendingCount,
+        totalRevenue: stats.totalSales,
+        aov,
+        cancelledCount: stats.cancelledCount,
+        cancelledRate
+      };
+
       return res.json({
         orders,
         total,
         page: pageNum,
         limit: limitNum,
-        totalPages: Math.ceil(total / limitNum) || 1
+        totalPages: Math.ceil(total / limitNum) || 1,
+        summary
       });
     }
 
@@ -611,6 +711,14 @@ router.get('/', auth, async (req, res) => {
       ordersQuery = ordersQuery.limit(maxLimit);
     }
     const orders = await ordersQuery.lean();
+    orders.forEach(o => {
+      if (!o.orderNumber) {
+        o.orderNumber = generateMeaningfulOrderNumber({
+          customerName: o.customerDetails?.name || o.customerName || 'Guest',
+          date: o.createdAt || new Date()
+        });
+      }
+    });
 
     res.json(orders);
   } catch (err) {
@@ -685,7 +793,7 @@ router.put('/:id/status', auth, async (req, res) => {
       return res.status(400).json({ error: 'Invalid Order ID' });
     }
 
-    const validStatuses = ['pending', 'preparing', 'ready', 'out_for_delivery', 'completed', 'cancelled'];
+    const validStatuses = ['pending', 'confirmed', 'preparing', 'ready', 'served', 'out_for_delivery', 'completed', 'cancelled'];
     if (status && !validStatuses.includes(status)) {
       return res.status(400).json({ error: 'Invalid order status value' });
     }
@@ -703,6 +811,12 @@ router.put('/:id/status', auth, async (req, res) => {
       updateFields.estimatedTime = Number(estimatedTime) > 0 ? Number(estimatedTime) : null;
     }
 
+    const existingOrder = await Order.findOne(filter);
+    if (!existingOrder) return res.status(404).json({ error: 'Order not found or unauthorized' });
+
+    const wasCancelledBefore = existingOrder.status === 'cancelled';
+    const isNowCancelled = status === 'cancelled';
+
     const order = await Order.findOneAndUpdate(
       filter,
       updateFields,
@@ -710,6 +824,35 @@ router.put('/:id/status', auth, async (req, res) => {
     );
 
     if (!order) return res.status(404).json({ error: 'Order not found or unauthorized' });
+
+    // If order was newly cancelled, adjust customer metrics if customer exists
+    if (!wasCancelledBefore && isNowCancelled && order && order.customerDetails?.phone) {
+      try {
+        const cleanPhone = String(order.customerDetails.phone).replace(/[^0-9]/g, '');
+        const orderAmount = Number(order.settledAmount || order.total || 0);
+        const pts = order.loyaltyPointsEarned || Math.round((order.subTotal || 0) * 0.05);
+
+        await Customer.findOneAndUpdate(
+          { tenantId: order.tenantId, phone: cleanPhone },
+          {
+            $inc: {
+              totalSpent: -orderAmount,
+              visitCount: -1,
+              loyaltyPoints: -pts
+            }
+          }
+        );
+        const targetCust = await Customer.findOne({ tenantId: order.tenantId, phone: cleanPhone });
+        if (targetCust) {
+          if (targetCust.totalSpent < 0) targetCust.totalSpent = 0;
+          if (targetCust.visitCount < 0) targetCust.visitCount = 0;
+          if (targetCust.loyaltyPoints < 0) targetCust.loyaltyPoints = 0;
+          await targetCust.save();
+        }
+      } catch (crmErr) {
+        console.error('Error adjusting customer for cancelled order:', crmErr);
+      }
+    }
 
     // Emit update to tenant room
     if (global.io && order.tenantId) {
@@ -816,7 +959,7 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
   try {
     const rawTable = String(req.params.tableNumber).trim();
     const numOnly = rawTable.replace(/[^0-9]/g, '') || rawTable;
-    const { paymentMethod, paymentStatus, actualAmount, settledAmount, mergedTables } = req.body;
+    const { paymentMethod, paymentStatus, actualAmount, settledAmount, mergedTables, orderIds } = req.body;
 
     let tenantId = req.user.tenantId;
     if (req.user.role === 'super_admin' && req.body.tenantId) {

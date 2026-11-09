@@ -540,10 +540,73 @@ async function sendRejectionEmail({ to, cafeName, ownerName, reason }) {
   });
 }
 
+/**
+ * 6. Admin Password Reset Email
+ */
+async function sendPasswordResetEmail({ to, cafeName, userName, tempPassword, loginUrl }) {
+  const title = `Password Reset — DINEVIQ Account`;
+  const preheader = `Your account credentials for ${cafeName || 'your cafe'} have been reset`;
+  const effectiveLoginUrl = loginUrl || `${BRAND.website}/login`;
+
+  const contentHtml = `
+    <h2 class="heading" style="margin: 0 0 14px 0; color: #065f46; font-size: 22px; font-weight: 800; letter-spacing: -0.01em;">
+      🔐 Your Password Has Been Reset
+    </h2>
+
+    <p style="margin: 0 0 12px 0; color: #334155; font-size: 15px;">Dear ${userName || 'Cafe Owner'},</p>
+
+    <p style="margin: 0 0 18px 0; color: #334155; font-size: 15px; line-height: 1.6;">
+      Your password for your <strong>DINEVIQ</strong> management console (<strong>${cafeName || 'Cafe Portal'}</strong>) has been reset by the platform administrator.
+    </p>
+
+    <div style="background: #f8fafc; border: 1.5px dashed #cbd5e1; border-radius: 14px; padding: 20px; margin: 20px 0; text-align: center;">
+      <p style="margin: 0 0 6px 0; font-size: 12px; font-weight: 700; color: #64748b; text-transform: uppercase; letter-spacing: 1px;">
+        Your Login Credentials
+      </p>
+      <p style="margin: 0 0 10px 0; font-size: 14px; color: #1e293b;">
+        <strong>Email:</strong> ${to}
+      </p>
+      <div style="background: #ffffff; border: 1px solid #e2e8f0; display: inline-block; padding: 10px 22px; border-radius: 10px; margin: 4px 0;">
+        <span style="font-size: 11px; color: #64748b; display: block; margin-bottom: 2px;">Temporary Password</span>
+        <code style="font-size: 20px; font-weight: 800; color: #047857; letter-spacing: 2px;">${tempPassword}</code>
+      </div>
+    </div>
+
+    <div style="text-align: center; margin: 26px 0 20px;">
+      <a href="${effectiveLoginUrl}" style="display: inline-block; background: #047857; color: #ffffff !important; text-decoration: none; padding: 14px 34px; border-radius: 9999px; font-weight: 700; font-size: 15px; box-shadow: 0 4px 14px rgba(4, 120, 87, 0.35);">
+        Log In to Your Console &rarr;
+      </a>
+    </div>
+
+    <p style="font-size: 12px; color: #64748b; text-align: center; margin: 0 0 12px 0;">
+      Or visit: <a href="${effectiveLoginUrl}" style="color: #059669;">${effectiveLoginUrl}</a>
+    </p>
+
+    <p style="font-size: 12px; color: #94a3b8; background: #fef3c7; border: 1px solid #fde68a; border-radius: 8px; padding: 10px 14px; margin: 16px 0 0 0; line-height: 1.5;">
+      ⚠️ <strong>Security Tip:</strong> For security, please log in with this temporary password and update it immediately in your <strong>Profile / Settings</strong> section.
+    </p>
+  `;
+
+  const html = wrapCard({
+    title,
+    subtitle: 'SECURITY & ACCESS',
+    preheader,
+    contentHtml
+  });
+
+  return sendMail({
+    to,
+    subject: `Password Reset for your DINEVIQ Account (${cafeName || 'Cafe'})`,
+    html,
+    text: `Your password for DINEVIQ (${cafeName}) has been reset. Email: ${to} | Temporary Password: ${tempPassword} | Log in at: ${effectiveLoginUrl}`
+  });
+}
+
 module.exports = {
   sendOtpEmail,
   sendInviteEmail,
   sendApplicationSubmittedEmail,
   sendApprovalEmail,
-  sendRejectionEmail
+  sendRejectionEmail,
+  sendPasswordResetEmail
 };

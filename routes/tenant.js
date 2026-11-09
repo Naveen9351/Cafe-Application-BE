@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const mongoose = require('mongoose');
 const Tenant = require('../models/Tenant');
 const auth = require('../middleware/auth');
 const checkRole = require('../middleware/checkRole');
@@ -11,12 +12,27 @@ const Order = require('../models/Order');
 const OnboardingRequest = require('../models/OnboardingRequest');
 const emailService = require('../utils/emailService');
 
-// Get all tenants (Super Admin only)
+// Get all tenants (Super Admin only) - enriched with admin user info
 router.get('/', [auth, checkRole(['super_admin'])], async (req, res) => {
     try {
-        const tenants = await Tenant.find().sort({ createdAt: -1 });
-        res.json(tenants);
+        const tenants = await Tenant.find().populate('ownerId', 'name email phone role').sort({ createdAt: -1 }).lean();
+        const enrichedTenants = await Promise.all(tenants.map(async (t) => {
+            let adminUser = t.ownerId;
+            if (!adminUser) {
+                adminUser = await User.findOne({ tenantId: t._id, role: 'admin' }).select('name email phone role').lean();
+            }
+            return {
+                ...t,
+                adminName: adminUser?.name || 'Admin',
+                ownerName: adminUser?.name || 'Admin',
+                adminEmail: adminUser?.email || t.email,
+                adminPhone: adminUser?.phone || t.phone,
+                ownerId: adminUser ? adminUser._id : t.ownerId
+            };
+        }));
+        res.json(enrichedTenants);
     } catch (err) {
+        console.error('Fetch tenants error:', err);
         res.status(500).json({ error: 'Server error' });
     }
 });
@@ -125,7 +141,10 @@ router.get('/public/:id', async (req, res) => {
 // NOTE: Must be defined BEFORE /:id route to prevent route shadowing
 router.put('/settings', auth, async (req, res) => {
     try {
-        const tenantId = req.user.tenantId || req.tenantId || req.body.tenantId;
+        const tenantId = req.user?.tenantId || req.tenantId || req.body.tenantId || req.query.tenantId;
+        if (!tenantId || !mongoose.Types.ObjectId.isValid(tenantId)) {
+            return res.status(400).json({ error: 'Invalid or missing tenant ID' });
+        }
         const { categories, theme, logo, currency, taxPercentage } = req.body;
 
         const tenant = await Tenant.findById(tenantId);
@@ -135,6 +154,7 @@ router.put('/settings', auth, async (req, res) => {
 
         // Update fields if provided
         if (categories && Array.isArray(categories)) tenant.settings.categories = categories;
+        else if (categories) tenant.settings.categories = categories;
         if (theme) tenant.settings.theme = theme;
         if (logo) tenant.settings.logo = logo;
         if (currency) tenant.settings.currency = currency;
@@ -153,6 +173,9 @@ router.put('/settings', auth, async (req, res) => {
 router.put('/:id', auth, async (req, res) => {
     try {
         const tenantId = req.params.id || req.user.tenantId;
+        if (!tenantId || !mongoose.Types.ObjectId.isValid(tenantId)) {
+            return res.status(400).json({ error: 'Invalid tenant ID format' });
+        }
         const { name, restaurantName, address, storeAddress, phone, primaryPhone, email, publicEmail, gstNumber, operatingHours, logo, accentColor, enableGst, enableGratuity } = req.body;
 
         const tenant = await Tenant.findById(tenantId);
@@ -194,6 +217,26 @@ router.put('/:id', auth, async (req, res) => {
             tenant.settings.enableKhata = Boolean(req.body.enableKhata);
         } else if (req.body.settings?.enableKhata !== undefined) {
             tenant.settings.enableKhata = Boolean(req.body.settings.enableKhata);
+        }
+        if (req.body.language !== undefined) {
+            tenant.settings.language = req.body.language;
+        } else if (req.body.settings?.language !== undefined) {
+            tenant.settings.language = req.body.settings.language;
+        }
+        if (req.body.enableNightMenu !== undefined) {
+            tenant.settings.enableNightMenu = Boolean(req.body.enableNightMenu);
+        } else if (req.body.settings?.enableNightMenu !== undefined) {
+            tenant.settings.enableNightMenu = Boolean(req.body.settings.enableNightMenu);
+        }
+        if (req.body.nightMenuStart !== undefined) {
+            tenant.settings.nightMenuStart = String(req.body.nightMenuStart);
+        } else if (req.body.settings?.nightMenuStart !== undefined) {
+            tenant.settings.nightMenuStart = String(req.body.settings.nightMenuStart);
+        }
+        if (req.body.nightMenuEnd !== undefined) {
+            tenant.settings.nightMenuEnd = String(req.body.nightMenuEnd);
+        } else if (req.body.settings?.nightMenuEnd !== undefined) {
+            tenant.settings.nightMenuEnd = String(req.body.settings.nightMenuEnd);
         }
 
         // Support direct categories update through PUT /:id
@@ -1059,6 +1102,193 @@ router.get('/:id/explore-analytics', [auth, checkRole(['super_admin'])], async (
     } catch (err) {
         console.error('Explore analytics error:', err);
         res.status(500).json({ error: 'Failed to fetch cafe explore analytics: ' + err.message });
+    }
+});
+
+// Update Cafe Tenant Details & Owner User Credentials (Super Admin)
+router.put('/:id/account', [auth, checkRole(['super_admin'])], async (req, res) => {
+    try {
+        const { cafeName, adminName, email, phone, password, sendEmailNotification } = req.body;
+        const tenantId = req.params.id;
+
+        const tenant = await Tenant.findById(tenantId);
+        if (!tenant) {
+            return res.status(404).json({ error: 'Tenant not found' });
+        }
+
+        // Find associated admin user
+        let user = null;
+        if (tenant.ownerId) {
+            user = await User.findById(tenant.ownerId);
+        }
+        if (!user) {
+            user = await User.findOne({ tenantId: tenant._id, role: 'admin' });
+        }
+
+        const normalizedEmail = email ? email.toLowerCase().trim() : null;
+
+        // If email is changing, ensure it is not taken by another user
+        if (normalizedEmail && normalizedEmail !== tenant.email.toLowerCase()) {
+            const existing = await User.findOne({ 
+                email: normalizedEmail, 
+                _id: { $ne: user?._id } 
+            });
+            if (existing) {
+                return res.status(400).json({ error: 'This email is already in use by another user' });
+            }
+        }
+
+        // Validate phone if provided
+        let cleanPhone = undefined;
+        if (phone !== undefined) {
+            cleanPhone = String(phone).trim();
+            if (cleanPhone && !/^[0-9]{10}$/.test(cleanPhone)) {
+                return res.status(400).json({ error: 'Mobile number must be exactly 10 digits' });
+            }
+        }
+
+        // Update Tenant fields
+        if (cafeName && cafeName.trim()) {
+            tenant.name = cafeName.trim();
+        }
+        if (normalizedEmail) {
+            tenant.email = normalizedEmail;
+        }
+        if (cleanPhone !== undefined) {
+            tenant.phone = cleanPhone;
+        }
+        await tenant.save();
+
+        // Update or Create Admin User
+        let plainPasswordForEmail = null;
+        if (user) {
+            if (adminName && adminName.trim()) {
+                user.name = adminName.trim();
+            }
+            if (normalizedEmail) {
+                user.email = normalizedEmail;
+            }
+            if (cleanPhone !== undefined) {
+                user.phone = cleanPhone;
+            }
+            if (password && String(password).trim()) {
+                const rawPass = String(password).trim();
+                if (rawPass.length < 6) {
+                    return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+                }
+                const salt = await bcrypt.genSalt(10);
+                user.password = await bcrypt.hash(rawPass, salt);
+                plainPasswordForEmail = rawPass;
+            }
+            await user.save();
+        } else {
+            // If user did not exist, create one
+            const rawPass = password && String(password).trim() ? String(password).trim() : 'Dine#' + crypto.randomBytes(3).toString('hex').toUpperCase();
+            const salt = await bcrypt.genSalt(10);
+            const hashedPassword = await bcrypt.hash(rawPass, salt);
+            user = new User({
+                tenantId: tenant._id,
+                name: adminName || tenant.name,
+                email: normalizedEmail || tenant.email,
+                phone: cleanPhone || tenant.phone,
+                password: hashedPassword,
+                role: 'admin',
+                status: 'active'
+            });
+            await user.save();
+            tenant.ownerId = user._id;
+            await tenant.save();
+            plainPasswordForEmail = rawPass;
+        }
+
+        // If email notification requested and password was updated
+        if (sendEmailNotification && plainPasswordForEmail) {
+            try {
+                await emailService.sendPasswordResetEmail({
+                    to: user.email,
+                    cafeName: tenant.name,
+                    userName: user.name,
+                    tempPassword: plainPasswordForEmail,
+                    loginUrl: `${process.env.FRONTEND_URL || 'https://www.dineviq.com'}/login`
+                });
+            } catch (mailErr) {
+                console.warn('Could not dispatch credential update email:', mailErr.message);
+            }
+        }
+
+        res.json({
+            success: true,
+            message: 'Cafe and user credentials updated successfully',
+            tenant: {
+                ...tenant.toObject(),
+                adminName: user.name,
+                adminEmail: user.email,
+                adminPhone: user.phone
+            }
+        });
+    } catch (err) {
+        console.error('Update tenant account error:', err);
+        res.status(500).json({ error: 'Failed to update account: ' + err.message });
+    }
+});
+
+// Send Password Reset Email to Cafe User's Gmail (Super Admin)
+router.post('/:id/send-reset-password', [auth, checkRole(['super_admin'])], async (req, res) => {
+    try {
+        const tenant = await Tenant.findById(req.params.id);
+        if (!tenant) {
+            return res.status(404).json({ error: 'Tenant not found' });
+        }
+
+        let user = null;
+        if (tenant.ownerId) {
+            user = await User.findById(tenant.ownerId);
+        }
+        if (!user) {
+            user = await User.findOne({ tenantId: tenant._id, role: 'admin' });
+        }
+
+        const tempPassword = 'Dine#' + crypto.randomBytes(3).toString('hex').toUpperCase();
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(tempPassword, salt);
+
+        if (!user) {
+            // Create admin user for tenant if not present
+            user = new User({
+                tenantId: tenant._id,
+                name: tenant.name,
+                email: tenant.email,
+                phone: tenant.phone || '',
+                password: hashedPassword,
+                role: 'admin',
+                status: 'active'
+            });
+            await user.save();
+            tenant.ownerId = user._id;
+            await tenant.save();
+        } else {
+            user.password = hashedPassword;
+            await user.save();
+        }
+
+        const mailResult = await emailService.sendPasswordResetEmail({
+            to: user.email,
+            cafeName: tenant.name,
+            userName: user.name,
+            tempPassword,
+            loginUrl: `${process.env.FRONTEND_URL || 'https://www.dineviq.com'}/login`
+        });
+
+        res.json({
+            success: true,
+            message: `Password reset email sent to ${user.email}`,
+            tempPassword,
+            email: user.email,
+            mailSent: mailResult ? mailResult.success : true
+        });
+    } catch (err) {
+        console.error('Send reset password error:', err);
+        res.status(500).json({ error: 'Failed to send reset password: ' + err.message });
     }
 });
 
