@@ -85,12 +85,16 @@ router.post('/', auth, async (req, res) => {
         const parsedPaid = Math.min(parsedBill, Math.max(0, Number(paidAmount) || 0));
         const parsedBorrow = Math.max(0, parsedBill - parsedPaid);
 
+        const validCustomDate = req.body.date && !isNaN(new Date(req.body.date).getTime())
+            ? new Date(req.body.date)
+            : null;
+
         const settlementHistory = [];
         if (parsedPaid > 0) {
             settlementHistory.push({
                 amount: parsedPaid,
                 paymentMethod: (req.body.paidMethod || 'cash').toLowerCase(),
-                settledAt: req.body.date ? new Date(req.body.date) : new Date(),
+                settledAt: validCustomDate || new Date(),
                 notes: 'Paid at purchase'
             });
         }
@@ -108,7 +112,7 @@ router.post('/', auth, async (req, res) => {
             notes: notes || '',
             status: parsedBorrow <= 0 ? 'settled' : (parsedPaid > 0 ? 'partially_settled' : 'pending'),
             settlementHistory,
-            createdAt: req.body.date ? new Date(req.body.date) : Date.now()
+            createdAt: validCustomDate || new Date()
         });
 
         await newRecord.save();
