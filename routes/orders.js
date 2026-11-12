@@ -801,6 +801,7 @@ router.get('/item-summary', auth, async (req, res) => {
       endDate,
       category = 'all',
       statusScope = 'completed',
+      groupBy = 'date',
       search = '',
       sortBy = 'date_desc',
       page = 1,
@@ -875,9 +876,14 @@ router.get('/item-summary', auth, async (req, res) => {
     const aov = totalBills > 0 ? Math.round(totalRevenue / totalBills) : 0;
 
     // Sort stage
-    let sortStage = { dateKey: -1, totalSales: -1 };
-    if (sortBy === 'qty_desc') sortStage = { qty: -1, dateKey: -1 };
-    else if (sortBy === 'sales_desc') sortStage = { totalSales: -1, dateKey: -1 };
+    let sortStage = groupBy === 'item'
+      ? { totalSales: -1, qty: -1 }
+      : { dateKey: -1, totalSales: -1 };
+    if (sortBy === 'qty_desc') {
+      sortStage = groupBy === 'item' ? { qty: -1, totalSales: -1 } : { dateKey: -1, qty: -1 };
+    } else if (sortBy === 'sales_desc') {
+      sortStage = groupBy === 'item' ? { totalSales: -1, qty: -1 } : { dateKey: -1, totalSales: -1 };
+    }
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
@@ -948,6 +954,7 @@ router.get('/item-summary', auth, async (req, res) => {
           },
           orderInfo: {
             orderNum: { $ifNull: ['$orderNumber', { $toString: '$_id' }] },
+            dateKey: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: 'Asia/Kolkata' } },
             createdAt: '$createdAt',
             tableNumber: '$tableNumber',
             customerName: { $ifNull: ['$customerName', '$customerDetails.name'] },
@@ -967,12 +974,18 @@ router.get('/item-summary', auth, async (req, res) => {
       ...(Object.keys(postMatch).length > 0 ? [{ $match: postMatch }] : []),
       {
         $group: {
-          _id: {
-            dateKey: '$dateKey',
-            itemKey: { $toLower: '$itemName' },
-            variantKey: { $toLower: '$variantName' }
-          },
-          dateKey: { $first: '$dateKey' },
+          _id: groupBy === 'item'
+            ? {
+                itemKey: { $toLower: '$itemName' },
+                variantKey: { $toLower: '$variantName' }
+              }
+            : {
+                dateKey: '$dateKey',
+                itemKey: { $toLower: '$itemName' },
+                variantKey: { $toLower: '$variantName' }
+              },
+          dateKey: { $max: '$dateKey' },
+          datesSold: { $addToSet: '$dateKey' },
           name: { $first: '$itemName' },
           variant: { $first: '$variantName' },
           category: { $first: '$category' },
