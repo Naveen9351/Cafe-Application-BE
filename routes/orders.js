@@ -800,12 +800,15 @@ router.get('/item-summary', auth, async (req, res) => {
       startDate,
       endDate,
       category = 'all',
+      statusScope = 'completed',
       search = '',
       sortBy = 'date_desc',
       page = 1,
       limit = 20,
       exportAll = 'false'
     } = req.query;
+
+    const tenantObjId = new mongoose.Types.ObjectId(tenantId);
 
     // Build flexible date filter supporting today, yesterday, 7d, 30d, this_month, custom, all
     const now = new Date();
@@ -833,14 +836,21 @@ router.get('/item-summary', auth, async (req, res) => {
       createdAtFilter = { $gte: s, $lte: e };
     }
 
+    const statusMatch = statusScope === 'all'
+      ? { $nin: ['cancelled'] }
+      : 'completed';
+
     const baseMatch = {
-      tenantId: new mongoose.Types.ObjectId(tenantId),
-      status: { $nin: ['cancelled'] },
+      tenantId: tenantObjId,
+      status: statusMatch,
       ...(createdAtFilter ? { createdAt: createdAtFilter } : {})
     };
 
+    // Fetch all menu categories for this tenant so dropdown never shrinks on 0-order filters
+    const menuCategoriesPromise = MenuItem.distinct('category', { tenantId: tenantObjId });
+
     // Order-level KPIs (total bills & total revenue across the date range)
-    const orderKpiAgg = await Order.aggregate([
+    const orderKpiPromise = Order.aggregate([
       { $match: baseMatch },
       {
         $group: {
@@ -857,6 +867,8 @@ router.get('/item-summary', auth, async (req, res) => {
         }
       }
     ]);
+
+    const [menuCategoriesRaw, orderKpiAgg] = await Promise.all([menuCategoriesPromise, orderKpiPromise]);
 
     const totalBills = orderKpiAgg[0]?.totalBills || 0;
     const totalRevenue = Math.round(orderKpiAgg[0]?.totalRevenue || 0);
@@ -881,6 +893,7 @@ router.get('/item-summary', auth, async (req, res) => {
       const escapedQ = String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       postMatch.$or = [
         { itemName: { $regex: escapedQ, $options: 'i' } },
+        { variantName: { $regex: escapedQ, $options: 'i' } },
         { category: { $regex: escapedQ, $options: 'i' } },
         { dateKey: { $regex: escapedQ, $options: 'i' } }
       ];
@@ -910,6 +923,11 @@ router.get('/item-summary', auth, async (req, res) => {
               }
             }
           },
+          variantName: {
+            $trim: {
+              input: { $ifNull: ['$items.variant.name', ''] }
+            }
+          },
           category: {
             $trim: {
               input: {
@@ -934,6 +952,8 @@ router.get('/item-summary', auth, async (req, res) => {
             tableNumber: '$tableNumber',
             customerName: { $ifNull: ['$customerName', '$customerDetails.name'] },
             paymentMethod: '$paymentMethod',
+            orderStatus: '$status',
+            variant: { $ifNull: ['$items.variant.name', ''] },
             qty: { $ifNull: ['$items.quantity', 1] },
             lineTotal: {
               $multiply: [
@@ -947,9 +967,14 @@ router.get('/item-summary', auth, async (req, res) => {
       ...(Object.keys(postMatch).length > 0 ? [{ $match: postMatch }] : []),
       {
         $group: {
-          _id: { dateKey: '$dateKey', itemKey: { $toLower: '$itemName' } },
+          _id: {
+            dateKey: '$dateKey',
+            itemKey: { $toLower: '$itemName' },
+            variantKey: { $toLower: '$variantName' }
+          },
           dateKey: { $first: '$dateKey' },
           name: { $first: '$itemName' },
+          variant: { $first: '$variantName' },
           category: { $first: '$category' },
           qty: { $sum: '$qty' },
           unitPrice: { $avg: '$unitPrice' },
@@ -965,7 +990,7 @@ router.get('/item-summary', auth, async (req, res) => {
               $group: {
                 _id: null,
                 totalUnits: { $sum: '$qty' },
-                uniqueNames: { $addToSet: '$name' },
+                uniqueNames: { $addToSet: { $concat: ['$name', '::', '$variant'] } },
                 categories: { $addToSet: '$category' }
               }
             }
@@ -973,7 +998,7 @@ router.get('/item-summary', auth, async (req, res) => {
           topDish: [
             {
               $group: {
-                _id: '$name',
+                _id: { name: '$name', variant: '$variant' },
                 qty: { $sum: '$qty' },
                 sales: { $sum: '$totalSales' }
               }
@@ -995,20 +1020,34 @@ router.get('/item-summary', auth, async (req, res) => {
     const totalsObj = aggResult?.totals?.[0] || {};
     const topDishDoc = aggResult?.topDish?.[0] || null;
 
+    // Merge menu categories & sold item categories (deduped case-insensitively)
+    const categoryMap = new Map();
+    [...(menuCategoriesRaw || []), ...(totalsObj.categories || [])].forEach(c => {
+      const trimmed = String(c || '').trim();
+      if (!trimmed) return;
+      const key = trimmed.toLowerCase();
+      if (!categoryMap.has(key)) categoryMap.set(key, trimmed);
+    });
+    const allCategories = Array.from(categoryMap.values()).sort((a, b) => a.localeCompare(b));
+
+    const topDishDisplay = topDishDoc
+      ? (topDishDoc._id.variant ? `${topDishDoc._id.name} (${topDishDoc._id.variant})` : topDishDoc._id.name)
+      : null;
+
     res.json({
       rows: aggResult?.rows || [],
       total: totalRows,
       page: pageNum,
       limit: limitNum,
       totalPages,
-      categories: (totalsObj.categories || []).sort(),
+      categories: allCategories,
       kpi: {
         totalRevenue,
         totalBills,
         aov,
         totalUnits: totalsObj.totalUnits || 0,
         uniqueDishes: (totalsObj.uniqueNames || []).length,
-        topDish: topDishDoc ? { name: topDishDoc._id, qty: topDishDoc.qty, sales: topDishDoc.sales } : null
+        topDish: topDishDoc ? { name: topDishDisplay, qty: topDishDoc.qty, sales: topDishDoc.sales } : null
       }
     });
   } catch (err) {
