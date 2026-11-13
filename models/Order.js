@@ -54,6 +54,8 @@ const orderSchema = new mongoose.Schema({
   subTotal: { type: Number, required: true },
   taxAmount: { type: Number, default: 0 },
   total: { type: Number, required: true },
+  discountAmount: { type: Number, default: 0 },
+  discountReason: { type: String, default: '' },
   settledAmount: { type: Number },
   paidAmount: { type: Number, default: 0 },
   paymentMethod: { type: String, default: 'UPI' },

@@ -1257,6 +1257,13 @@ router.put('/table/:tableNumber/pay-items', auth, async (req, res) => {
         if (customSettled !== null && payAll) {
           ord.settledAmount = customSettled;
           ord.paidAmount = customSettled;
+          const discount = req.body.discountAmount !== undefined
+            ? Number(req.body.discountAmount)
+            : (customSettled < ord.total ? (ord.total - customSettled) : 0);
+          if (discount > 0) {
+            ord.discountAmount = (ord.discountAmount || 0) + discount;
+            ord.discountReason = req.body.discountReason || 'Settlement Concession / Round Off';
+          }
           ord.paymentStatus = 'paid';
           totalNewlyPaid = customSettled;
         } else {
@@ -1347,13 +1354,30 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
       if (actualSettledAmt !== null) {
         if (activeOrders.length === 1) {
           ord.settledAmount = actualSettledAmt;
+          ord.paidAmount = actualSettledAmt;
         } else {
           // Distribute proportionally if multiple orders were merged
           const ratio = totalOriginalSum > 0 ? (ord.total / totalOriginalSum) : (1 / activeOrders.length);
           ord.settledAmount = Math.round(actualSettledAmt * ratio);
+          ord.paidAmount = ord.settledAmount;
+        }
+
+        const discount = req.body.discountAmount !== undefined
+          ? Number(req.body.discountAmount)
+          : (actualSettledAmt < totalOriginalSum ? (totalOriginalSum - actualSettledAmt) : 0);
+
+        if (discount > 0) {
+          if (activeOrders.length === 1) {
+            ord.discountAmount = (ord.discountAmount || 0) + discount;
+          } else {
+            const ratio = totalOriginalSum > 0 ? (ord.total / totalOriginalSum) : (1 / activeOrders.length);
+            ord.discountAmount = (ord.discountAmount || 0) + Math.round(discount * ratio);
+          }
+          ord.discountReason = req.body.discountReason || 'Settlement Concession / Round Off';
         }
       } else {
         ord.settledAmount = ord.total;
+        ord.paidAmount = ord.total;
       }
 
       await ord.save();
