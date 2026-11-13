@@ -7,8 +7,13 @@ const Order = require('../models/Order');
 const Tenant = require('../models/Tenant');
 
 // Helper to resolve tenant ID securely
-const getTenantId = (req) => {
-  return req.tenantId || req.user?.tenantId || req.query.tenantId || req.body.tenantId;
+const getTenantId = async (req) => {
+  let tenantId = req.tenantId || req.user?.tenantId || req.query?.tenantId || req.body?.tenantId || req.header('x-tenant-id');
+  if (!tenantId && req.user?.role === 'super_admin') {
+    const defaultTenant = await Tenant.findOne().select('_id');
+    if (defaultTenant) tenantId = defaultTenant._id;
+  }
+  return tenantId;
 };
 
 // @route   GET /api/invoices
@@ -16,7 +21,7 @@ const getTenantId = (req) => {
 // @access  Protected
 router.get('/', auth, async (req, res) => {
   try {
-    const tenantId = getTenantId(req);
+    const tenantId = await getTenantId(req);
     if (!tenantId || !mongoose.Types.ObjectId.isValid(tenantId)) {
       return res.status(400).json({ error: 'Valid Tenant ID is required' });
     }
@@ -98,7 +103,7 @@ router.get('/', auth, async (req, res) => {
 router.post('/generate', auth, async (req, res) => {
   try {
     const { orderId } = req.body;
-    const tenantId = getTenantId(req);
+    const tenantId = await getTenantId(req);
 
     if (!orderId || !mongoose.Types.ObjectId.isValid(orderId)) {
       return res.status(400).json({ error: 'Valid Order ID is required' });

@@ -832,9 +832,11 @@ router.get('/analytics', auth, checkRole(['admin', 'super_admin']), async (req, 
 // GET Item-Wise & Date-Wise Sales Summary with Backend Pagination
 router.get('/item-summary', auth, async (req, res) => {
   try {
-    let tenantId = req.user.tenantId;
-    if (req.user.role === 'super_admin' && req.query.tenantId) {
-      tenantId = req.query.tenantId;
+    let tenantId = req.user?.tenantId || req.tenantId || req.query?.tenantId || req.header('x-tenant-id');
+    if (!tenantId && req.user?.role === 'super_admin') {
+      const Tenant = require('../models/Tenant');
+      const defaultTenant = await Tenant.findOne().select('_id');
+      if (defaultTenant) tenantId = defaultTenant._id;
     }
     if (!tenantId || !mongoose.Types.ObjectId.isValid(tenantId)) {
       return res.status(400).json({ error: 'Valid Tenant ID required' });
