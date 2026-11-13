@@ -15,6 +15,7 @@ const orderSchema = new mongoose.Schema({
   // Table number is now tenant-specific string or ID
   orderNumber: { type: String, index: true, trim: true },
   tableNumber: { type: String, required: true },
+  roundNumber: { type: Number, default: 1 },
 
   // Who took the order (optional, could be self-service via QR)
   waiterId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

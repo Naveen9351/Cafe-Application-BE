@@ -128,7 +128,30 @@ router.post(
         return res.status(400).json({ error: 'Invalid items or items not found for this tenant' });
       }
 
-      // 2. Calculate Totals with Discount Support
+      // 2. Calculate Totals with Shift-Based Dynamic Pricing & Discount Support
+      let isNightShiftActive = false;
+      try {
+        if (tenant && tenant.settings && (tenant.settings.enableNightMenu || tenant.settings.nightMenuEnabled)) {
+          const startStr = tenant.settings.nightMenuStart || '22:00';
+          const endStr = tenant.settings.nightMenuEnd || '05:00';
+          const now = new Date();
+          const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+          const [sH, sM] = startStr.split(':').map(Number);
+          const [eH, eM] = endStr.split(':').map(Number);
+          const startMinutes = (sH || 0) * 60 + (sM || 0);
+          const endMinutes = (eH || 0) * 60 + (eM || 0);
+
+          if (startMinutes > endMinutes) {
+            isNightShiftActive = currentMinutes >= startMinutes || currentMinutes < endMinutes;
+          } else {
+            isNightShiftActive = currentMinutes >= startMinutes && currentMinutes < endMinutes;
+          }
+        }
+      } catch (err) {
+        console.warn('Error determining shift pricing:', err.message);
+      }
+
       let subTotal = 0;
       const orderItems = [];
 
@@ -148,7 +171,11 @@ router.post(
         if (dbItem) {
           const quantity = clientItem.quantity || 1;
           
+          // Apply Shift Dynamic Pricing: Use nightPrice if night shift is currently active
           let basePrice = dbItem.price;
+          if (isNightShiftActive && dbItem.nightPrice && Number(dbItem.nightPrice) > 0) {
+            basePrice = Math.round(Number(dbItem.nightPrice));
+          }
 
           // Apply Item Discount if active
           if (dbItem.discount && dbItem.discount.isDiscounted) {
@@ -256,10 +283,28 @@ router.post(
         collisionIndex++;
       }
 
+      // Calculate Round Number for Table (current active rounds + 1)
+      let resolvedRound = req.body.roundNumber ? Number(req.body.roundNumber) : null;
+      if (!resolvedRound && tableNumber && tableNumber !== 'Takeaway' && tableNumber !== 'Counter' && tableNumber !== 'Walk-in') {
+        try {
+          const activeCount = await Order.countDocuments({
+            tenantId,
+            tableNumber: String(tableNumber),
+            status: { $in: ['pending', 'confirmed', 'preparing', 'ready', 'served'] }
+          });
+          resolvedRound = activeCount + 1;
+        } catch (e) {
+          resolvedRound = 1;
+        }
+      } else if (!resolvedRound) {
+        resolvedRound = 1;
+      }
+
       const newOrder = new Order({
         tenantId,
         orderNumber: uniqueOrderNumber,
         tableNumber: tableNumber || 'Counter',
+        roundNumber: resolvedRound,
         items: orderItems,
         subTotal,
         taxAmount,
@@ -1159,6 +1204,58 @@ router.put('/:id/items', auth, async (req, res) => {
     res.json(order);
   } catch (err) {
     console.error('Update order items error:', err);
+    res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
+// APPEND New Items to an Existing Active Order (Used for Direct Counter additions without creating a new round)
+router.post('/:id/append-items', auth, async (req, res) => {
+  try {
+    const { items } = req.body;
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid Order ID' });
+    }
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Items array is required' });
+    }
+
+    const order = await Order.findById(req.params.id);
+    if (!order) return res.status(404).json({ error: 'Order not found' });
+
+    let addedTotal = 0;
+    for (const clientItem of items) {
+      const quantity = Number(clientItem.quantity) || 1;
+      const price = Number(clientItem.price) || 0;
+      const itemTotal = price * quantity;
+      addedTotal += itemTotal;
+
+      order.items.push({
+        item: mongoose.Types.ObjectId.isValid(clientItem.id || clientItem.itemId) ? (clientItem.id || clientItem.itemId) : undefined,
+        name: clientItem.name,
+        quantity,
+        price,
+        variant: clientItem.variant || null,
+        addons: clientItem.addons || [],
+        itemStatus: clientItem.itemStatus || 'served',
+        isDirect: clientItem.isDirect !== undefined ? clientItem.isDirect : true,
+        isPaid: Boolean(clientItem.isPaid)
+      });
+    }
+
+    order.subTotal = Math.round((Number(order.subTotal || 0) + addedTotal) * 100) / 100;
+    order.total = Math.round((Number(order.total || 0) + addedTotal) * 100) / 100;
+
+    await order.save();
+
+    setImmediate(() => deductStockForOrder(order));
+
+    if (global.io && order.tenantId) {
+      global.io.to(order.tenantId.toString()).emit('orderUpdate', order);
+    }
+
+    res.json(order);
+  } catch (err) {
+    console.error('Append items to order error:', err);
     res.status(500).json({ error: 'Server error: ' + err.message });
   }
 });

@@ -37,9 +37,11 @@ const invoiceSchema = new mongoose.Schema({
 
     paymentMethod: {
         type: String,
-        enum: ['cash', 'card', 'upi', 'online'],
         default: 'cash'
     },
+    tableNumber: { type: String },
+    channel: { type: String, default: 'dine-in' },
+    notes: { type: String },
 
     createdAt: { type: Date, default: Date.now }
 });
