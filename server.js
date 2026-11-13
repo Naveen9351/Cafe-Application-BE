@@ -54,7 +54,16 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'x-auth-token', 'Origin', 'Accept', 'X-Requested-With']
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'x-auth-token',
+    'x-tenant-id',
+    'Origin',
+    'Accept',
+    'X-Requested-With'
+  ],
+  exposedHeaders: ['X-Response-Time']
 }));
 
 app.use(express.json({ limit: '10mb' }));
@@ -80,6 +89,18 @@ app.use('/api/khata', require('./routes/khata'));
 app.use('/api/invoices', require('./routes/invoices'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/analytics', require('./routes/analytics'));
+
+// Global error handling middleware (ensures all errors, including Multer errors, return CORS headers and JSON)
+app.use((err, req, res, next) => {
+  console.error('Unhandled request error:', err);
+  if (res.headersSent) {
+    return next(err);
+  }
+  const status = err.status || (err.name === 'MulterError' ? 400 : 500);
+  res.status(status).json({
+    error: err.message || 'Internal Server Error'
+  });
+});
 
 // Database Connection with High-Speed Connection Pooling
 const seedDatabase = require('./utils/seeder');
