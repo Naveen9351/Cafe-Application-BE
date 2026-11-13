@@ -829,6 +829,291 @@ router.get('/analytics', auth, checkRole(['admin', 'super_admin']), async (req, 
   }
 });
 
+// GET Item-Wise & Date-Wise Sales Summary with Backend Pagination
+router.get('/item-summary', auth, async (req, res) => {
+  try {
+    let tenantId = req.user.tenantId;
+    if (req.user.role === 'super_admin' && req.query.tenantId) {
+      tenantId = req.query.tenantId;
+    }
+    if (!tenantId || !mongoose.Types.ObjectId.isValid(tenantId)) {
+      return res.status(400).json({ error: 'Valid Tenant ID required' });
+    }
+
+    const {
+      range = 'all',
+      startDate,
+      endDate,
+      category = 'all',
+      statusScope = 'completed',
+      groupBy = 'date',
+      search = '',
+      sortBy = 'date_desc',
+      page = 1,
+      limit = 20,
+      exportAll = 'false'
+    } = req.query;
+
+    const tenantObjId = new mongoose.Types.ObjectId(tenantId);
+
+    // Build flexible date filter supporting today, yesterday, 7d, 30d, this_month, custom, all
+    const now = new Date();
+    let createdAtFilter = null;
+    if (range === 'today') {
+      const s = new Date(now); s.setHours(0, 0, 0, 0);
+      const e = new Date(now); e.setHours(23, 59, 59, 999);
+      createdAtFilter = { $gte: s, $lte: e };
+    } else if (range === 'yesterday') {
+      const s = new Date(now); s.setDate(now.getDate() - 1); s.setHours(0, 0, 0, 0);
+      const e = new Date(now); e.setDate(now.getDate() - 1); e.setHours(23, 59, 59, 999);
+      createdAtFilter = { $gte: s, $lte: e };
+    } else if (range === '7d') {
+      const s = new Date(now); s.setDate(now.getDate() - 7); s.setHours(0, 0, 0, 0);
+      createdAtFilter = { $gte: s, $lte: now };
+    } else if (range === '30d') {
+      const s = new Date(now); s.setDate(now.getDate() - 30); s.setHours(0, 0, 0, 0);
+      createdAtFilter = { $gte: s, $lte: now };
+    } else if (range === 'this_month') {
+      const s = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+      createdAtFilter = { $gte: s, $lte: now };
+    } else if (range === 'custom' && (startDate || endDate)) {
+      const s = startDate ? new Date(`${startDate}T00:00:00`) : new Date('2020-01-01T00:00:00');
+      const e = endDate ? new Date(`${endDate}T23:59:59.999`) : new Date();
+      createdAtFilter = { $gte: s, $lte: e };
+    }
+
+    const statusMatch = statusScope === 'all'
+      ? { $nin: ['cancelled'] }
+      : 'completed';
+
+    const baseMatch = {
+      tenantId: tenantObjId,
+      status: statusMatch,
+      ...(createdAtFilter ? { createdAt: createdAtFilter } : {})
+    };
+
+    // Fetch all menu categories for this tenant so dropdown never shrinks on 0-order filters
+    const menuCategoriesPromise = MenuItem.distinct('category', { tenantId: tenantObjId });
+
+    // Order-level KPIs (total bills & total revenue across the date range)
+    const orderKpiPromise = Order.aggregate([
+      { $match: baseMatch },
+      {
+        $group: {
+          _id: null,
+          totalBills: { $sum: 1 },
+          totalRevenue: {
+            $sum: {
+              $ifNull: [
+                '$settledAmount',
+                { $ifNull: ['$finalAmount', { $ifNull: ['$total', 0] }] }
+              ]
+            }
+          }
+        }
+      }
+    ]);
+
+    const [menuCategoriesRaw, orderKpiAgg] = await Promise.all([menuCategoriesPromise, orderKpiPromise]);
+
+    const totalBills = orderKpiAgg[0]?.totalBills || 0;
+    const totalRevenue = Math.round(orderKpiAgg[0]?.totalRevenue || 0);
+    const aov = totalBills > 0 ? Math.round(totalRevenue / totalBills) : 0;
+
+    // Sort stage
+    let sortStage = groupBy === 'item'
+      ? { totalSales: -1, qty: -1 }
+      : { dateKey: -1, totalSales: -1 };
+    if (sortBy === 'qty_desc') {
+      sortStage = groupBy === 'item' ? { qty: -1, totalSales: -1 } : { dateKey: -1, qty: -1 };
+    } else if (sortBy === 'sales_desc') {
+      sortStage = groupBy === 'item' ? { totalSales: -1, qty: -1 } : { dateKey: -1, totalSales: -1 };
+    }
+
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+    const isExport = exportAll === 'true';
+
+    // Post-unwind filter (search + category)
+    const postMatch = {};
+    if (category && category !== 'all') {
+      const escapedCat = String(category).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      postMatch.category = { $regex: new RegExp(`^${escapedCat}$`, 'i') };
+    }
+    if (search && String(search).trim()) {
+      const escapedQ = String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      postMatch.$or = [
+        { itemName: { $regex: escapedQ, $options: 'i' } },
+        { variantName: { $regex: escapedQ, $options: 'i' } },
+        { category: { $regex: escapedQ, $options: 'i' } },
+        { dateKey: { $regex: escapedQ, $options: 'i' } }
+      ];
+    }
+
+    const pipeline = [
+      { $match: baseMatch },
+      { $unwind: '$items' },
+      {
+        $lookup: {
+          from: 'menuitems',
+          localField: 'items.item',
+          foreignField: '_id',
+          as: 'menuDoc'
+        }
+      },
+      {
+        $project: {
+          dateKey: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: 'Asia/Kolkata' } },
+          itemName: {
+            $trim: {
+              input: {
+                $ifNull: [
+                  '$items.name',
+                  { $ifNull: [{ $arrayElemAt: ['$menuDoc.name', 0] }, 'Unknown Item'] }
+                ]
+              }
+            }
+          },
+          variantName: {
+            $trim: {
+              input: { $ifNull: ['$items.variant.name', ''] }
+            }
+          },
+          category: {
+            $trim: {
+              input: {
+                $ifNull: [
+                  '$items.category',
+                  { $ifNull: [{ $arrayElemAt: ['$menuDoc.category', 0] }, 'General'] }
+                ]
+              }
+            }
+          },
+          qty: { $ifNull: ['$items.quantity', 1] },
+          unitPrice: { $ifNull: ['$items.price', 0] },
+          lineTotal: {
+            $multiply: [
+              { $ifNull: ['$items.quantity', 1] },
+              { $ifNull: ['$items.price', 0] }
+            ]
+          },
+          orderInfo: {
+            orderNum: { $ifNull: ['$orderNumber', { $toString: '$_id' }] },
+            dateKey: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt', timezone: 'Asia/Kolkata' } },
+            createdAt: '$createdAt',
+            tableNumber: '$tableNumber',
+            customerName: { $ifNull: ['$customerName', '$customerDetails.name'] },
+            paymentMethod: '$paymentMethod',
+            orderStatus: '$status',
+            variant: { $ifNull: ['$items.variant.name', ''] },
+            qty: { $ifNull: ['$items.quantity', 1] },
+            lineTotal: {
+              $multiply: [
+                { $ifNull: ['$items.quantity', 1] },
+                { $ifNull: ['$items.price', 0] }
+              ]
+            }
+          }
+        }
+      },
+      ...(Object.keys(postMatch).length > 0 ? [{ $match: postMatch }] : []),
+      {
+        $group: {
+          _id: groupBy === 'item'
+            ? {
+                itemKey: { $toLower: '$itemName' },
+                variantKey: { $toLower: '$variantName' }
+              }
+            : {
+                dateKey: '$dateKey',
+                itemKey: { $toLower: '$itemName' },
+                variantKey: { $toLower: '$variantName' }
+              },
+          dateKey: { $max: '$dateKey' },
+          datesSold: { $addToSet: '$dateKey' },
+          name: { $first: '$itemName' },
+          variant: { $first: '$variantName' },
+          category: { $first: '$category' },
+          qty: { $sum: '$qty' },
+          unitPrice: { $avg: '$unitPrice' },
+          totalSales: { $sum: '$lineTotal' },
+          orders: { $push: '$orderInfo' }
+        }
+      },
+      {
+        $facet: {
+          metadata: [{ $count: 'total' }],
+          totals: [
+            {
+              $group: {
+                _id: null,
+                totalUnits: { $sum: '$qty' },
+                uniqueNames: { $addToSet: { $concat: ['$name', '::', '$variant'] } },
+                categories: { $addToSet: '$category' }
+              }
+            }
+          ],
+          topDish: [
+            {
+              $group: {
+                _id: { name: '$name', variant: '$variant' },
+                qty: { $sum: '$qty' },
+                sales: { $sum: '$totalSales' }
+              }
+            },
+            { $sort: { qty: -1 } },
+            { $limit: 1 }
+          ],
+          rows: [
+            { $sort: sortStage },
+            ...(isExport ? [] : [{ $skip: (pageNum - 1) * limitNum }, { $limit: limitNum }])
+          ]
+        }
+      }
+    ];
+
+    const [aggResult] = await Order.aggregate(pipeline);
+    const totalRows = aggResult?.metadata?.[0]?.total || 0;
+    const totalPages = Math.max(1, Math.ceil(totalRows / limitNum));
+    const totalsObj = aggResult?.totals?.[0] || {};
+    const topDishDoc = aggResult?.topDish?.[0] || null;
+
+    // Merge menu categories & sold item categories (deduped case-insensitively)
+    const categoryMap = new Map();
+    [...(menuCategoriesRaw || []), ...(totalsObj.categories || [])].forEach(c => {
+      const trimmed = String(c || '').trim();
+      if (!trimmed) return;
+      const key = trimmed.toLowerCase();
+      if (!categoryMap.has(key)) categoryMap.set(key, trimmed);
+    });
+    const allCategories = Array.from(categoryMap.values()).sort((a, b) => a.localeCompare(b));
+
+    const topDishDisplay = topDishDoc
+      ? (topDishDoc._id.variant ? `${topDishDoc._id.name} (${topDishDoc._id.variant})` : topDishDoc._id.name)
+      : null;
+
+    res.json({
+      rows: aggResult?.rows || [],
+      total: totalRows,
+      page: pageNum,
+      limit: limitNum,
+      totalPages,
+      categories: allCategories,
+      kpi: {
+        totalRevenue,
+        totalBills,
+        aov,
+        totalUnits: totalsObj.totalUnits || 0,
+        uniqueDishes: (totalsObj.uniqueNames || []).length,
+        topDish: topDishDoc ? { name: topDishDisplay, qty: topDishDoc.qty, sales: topDishDoc.sales } : null
+      }
+    });
+  } catch (err) {
+    console.error('Item summary error:', err);
+    res.status(500).json({ error: 'Failed to generate item summary' });
+  }
+});
+
 // UPDATE Order Status (Admin/Staff with strict Tenant Scoping)
 router.put('/:id/status', auth, async (req, res) => {
   try {

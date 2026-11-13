@@ -138,9 +138,10 @@ router.get('/public/:id', async (req, res) => {
 });
 
 // Update Tenant Settings (Category, Theme etc.) - For Admin/Staff
+// NOTE: Must be defined BEFORE /:id route to prevent route shadowing
 router.put('/settings', auth, async (req, res) => {
     try {
-        const tenantId = req.user?.tenantId || req.body.tenantId || req.query.tenantId;
+        const tenantId = req.user?.tenantId || req.tenantId || req.body.tenantId || req.query.tenantId;
         if (!tenantId || !mongoose.Types.ObjectId.isValid(tenantId)) {
             return res.status(400).json({ error: 'Invalid or missing tenant ID' });
         }
@@ -152,12 +153,14 @@ router.put('/settings', auth, async (req, res) => {
         if (!tenant.settings) tenant.settings = {};
 
         // Update fields if provided
-        if (categories) tenant.settings.categories = categories;
+        if (categories && Array.isArray(categories)) tenant.settings.categories = categories;
+        else if (categories) tenant.settings.categories = categories;
         if (theme) tenant.settings.theme = theme;
         if (logo) tenant.settings.logo = logo;
         if (currency) tenant.settings.currency = currency;
         if (taxPercentage !== undefined) tenant.settings.taxPercentage = taxPercentage;
 
+        tenant.markModified('settings');
         await tenant.save();
         res.json(tenant.settings);
     } catch (err) {
@@ -236,6 +239,14 @@ router.put('/:id', auth, async (req, res) => {
             tenant.settings.nightMenuEnd = String(req.body.settings.nightMenuEnd);
         }
 
+        // Support direct categories update through PUT /:id
+        if (req.body.categories && Array.isArray(req.body.categories)) {
+            tenant.settings.categories = req.body.categories;
+        } else if (req.body.settings?.categories && Array.isArray(req.body.settings.categories)) {
+            tenant.settings.categories = req.body.settings.categories;
+        }
+
+        tenant.markModified('settings');
         await tenant.save();
         res.json(tenant);
     } catch (err) {
