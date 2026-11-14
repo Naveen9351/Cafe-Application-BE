@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const path = require('path');
+const fs = require('fs');
 const helmet = require('helmet');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -89,6 +90,18 @@ app.use('/api/khata', require('./routes/khata'));
 app.use('/api/invoices', require('./routes/invoices'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/analytics', require('./routes/analytics'));
+
+// Serve Frontend static build on the same port (unified single-port fullstack)
+const clientBuildPath = path.join(__dirname, '../Cafe-Application-FE/build');
+if (fs.existsSync(clientBuildPath)) {
+  app.use(express.static(clientBuildPath));
+  app.use((req, res, next) => {
+    if (req.method === 'GET' && !req.path.startsWith('/api') && !req.path.startsWith('/uploads') && !req.path.startsWith('/health')) {
+      return res.sendFile(path.join(clientBuildPath, 'index.html'));
+    }
+    next();
+  });
+}
 
 // Global error handling middleware (ensures all errors, including Multer errors, return CORS headers and JSON)
 app.use((err, req, res, next) => {
