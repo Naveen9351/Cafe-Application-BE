@@ -43,6 +43,58 @@ router.get('/', async (req, res) => {
   }
 });
 
+// POST /api/tables/temp - Create a Temporary Table / Open Tab for walk-in or floating guests
+router.post('/temp', auth, async (req, res) => {
+  try {
+    const tenantId = req.user.tenantId || req.tenantId;
+    const { customerName, customerPhone, notes, seatingCapacity } = req.body;
+
+    if (!tenantId) {
+      return res.status(400).json({ error: 'Tenant ID required' });
+    }
+
+    const cleanCustName = String(customerName || '').trim();
+    if (!cleanCustName) {
+      return res.status(400).json({ error: 'Customer name or Tab name is required' });
+    }
+
+    // Generate tableNumber: e.g. "Temp - Lakshya" or auto-suffix if multiple active
+    const baseTableNumber = `Temp - ${cleanCustName}`;
+    let finalTableNumber = baseTableNumber;
+    let counter = 2;
+
+    while (await Table.findOne({
+      tenantId,
+      tableNumber: { $regex: new RegExp(`^${finalTableNumber.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }
+    })) {
+      finalTableNumber = `${baseTableNumber} (${counter++})`;
+    }
+
+    const newTempTable = new Table({
+      tenantId,
+      tableNumber: finalTableNumber,
+      section: 'Temporary Tables',
+      seatingCapacity: Number(seatingCapacity) || 4,
+      status: 'available',
+      isTemporary: true,
+      customerName: cleanCustName,
+      customerPhone: customerPhone ? String(customerPhone).trim() : '',
+      notes: notes ? String(notes).trim() : ''
+    });
+
+    await newTempTable.save();
+
+    if (global.io) {
+      global.io.to(tenantId.toString()).emit('tablesUpdated', { table: newTempTable, action: 'created' });
+    }
+
+    res.status(201).json(newTempTable);
+  } catch (err) {
+    console.error('Create temporary table error:', err);
+    res.status(500).json({ error: 'Failed to create temporary table: ' + err.message });
+  }
+});
+
 // POST /api/tables - Create a new table for the tenant
 router.post('/', [auth, checkRole(['admin', 'super_admin'])], async (req, res) => {
   try {
@@ -136,8 +188,8 @@ router.put('/:id', [auth, checkRole(['admin', 'super_admin'])], async (req, res)
   }
 });
 
-// DELETE /api/tables/:id - Delete a table
-router.delete('/:id', [auth, checkRole(['admin', 'super_admin'])], async (req, res) => {
+// DELETE /api/tables/:id - Delete a table (or remove temporary table)
+router.delete('/:id', auth, async (req, res) => {
   try {
     const tenantId = req.user.tenantId || req.tenantId;
 
@@ -150,9 +202,20 @@ router.delete('/:id', [auth, checkRole(['admin', 'super_admin'])], async (req, r
       filter.tenantId = tenantId;
     }
 
-    const deleted = await Table.findOneAndDelete(filter);
-    if (!deleted) {
+    const tableToDel = await Table.findOne(filter);
+    if (!tableToDel) {
       return res.status(404).json({ error: 'Table not found or unauthorized' });
+    }
+
+    // Permanent tables still require admin/super_admin role; temporary tables can be dismissed by any authorized staff
+    if (!tableToDel.isTemporary && !['admin', 'super_admin'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Admin permission required to delete permanent tables' });
+    }
+
+    await Table.deleteOne({ _id: tableToDel._id });
+
+    if (global.io && tenantId) {
+      global.io.to(tenantId.toString()).emit('tablesUpdated', { deletedId: req.params.id, action: 'deleted' });
     }
 
     res.json({ message: 'Table deleted successfully', id: req.params.id });

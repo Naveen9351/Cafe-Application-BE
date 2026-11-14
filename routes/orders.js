@@ -1388,12 +1388,21 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
       }
     }
 
-    // Free all settled tables in the Table model
+    // Free all settled tables in the Table model (and auto-delete temporary tables)
     if (tenantId && Table) {
       try {
+        // Auto-remove any temporary table on bill settlement
+        await Table.deleteMany({
+          tenantId,
+          isTemporary: true,
+          $or: tablePatterns.map(p => ({ tableNumber: { $regex: p } }))
+        });
+
+        // For permanent tables, reset to available
         await Table.updateMany(
           {
             tenantId,
+            isTemporary: { $ne: true },
             $or: tablePatterns.map(p => ({ tableNumber: { $regex: p } }))
           },
           { $set: { status: 'available', currentOrder: null } }
