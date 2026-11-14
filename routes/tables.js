@@ -58,7 +58,7 @@ router.post('/temp', auth, async (req, res) => {
       return res.status(400).json({ error: 'Customer name or Tab name is required' });
     }
 
-    // Generate tableNumber: e.g. "Temp - Lakshya" or auto-suffix if multiple active
+    // Generate tableNumber: e.g. "Temp - Deepak" or auto-suffix if multiple active
     const baseTableNumber = `Temp - ${cleanCustName}`;
     let finalTableNumber = baseTableNumber;
     let counter = 2;
