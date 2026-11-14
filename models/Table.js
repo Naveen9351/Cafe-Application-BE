@@ -28,6 +28,26 @@ const TableSchema = new mongoose.Schema({
     enum: ['available', 'occupied', 'ordering', 'preparing', 'bill_requested', 'payment_pending', 'reserved', 'cleaning'],
     default: 'available'
   },
+  isTemporary: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
+  customerName: {
+    type: String,
+    default: '',
+    trim: true
+  },
+  customerPhone: {
+    type: String,
+    default: '',
+    trim: true
+  },
+  notes: {
+    type: String,
+    default: '',
+    trim: true
+  },
   qrUrl: {
     type: String
   }
