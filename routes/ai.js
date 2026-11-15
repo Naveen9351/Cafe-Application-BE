@@ -53,9 +53,155 @@ const preprocessImage = async (filePath) => {
   }
 };
 
-// 2. Semantic Item Validation Layer
-const VALID_CATEGORIES = ['hot-coffee', 'cold-coffee', 'burger', 'pizza', 'sandwich', 'snacks', 'wraps', 'pasta', 'cold-drinks', 'mocktails', 'shakes', 'desserts'];
+// 2. Semantic Item Validation Layer (Supports Multilingual: Hindi, English, etc.)
 const VALID_TYPES = ['veg', 'non-veg'];
+
+// Robust JSON Parser with graceful recovery for incomplete arrays
+const safeParseMenuJson = (text) => {
+  if (!text || typeof text !== 'string') return null;
+  let clean = text.trim();
+  if (clean.includes('```json')) {
+    clean = clean.split('```json')[1].split('```')[0].trim();
+  } else if (clean.includes('```')) {
+    clean = clean.split('```')[1].split('```')[0].trim();
+  }
+
+  try {
+    return JSON.parse(clean);
+  } catch (err1) {
+    console.warn("Direct JSON.parse failed, attempting structural recovery:", err1.message);
+    try {
+      const lastCloseObj = clean.lastIndexOf('}');
+      if (lastCloseObj > 0) {
+        let repaired = clean.substring(0, lastCloseObj + 1).trim();
+        if (repaired.startsWith('[') && !repaired.endsWith(']')) {
+          repaired += ']';
+        }
+        return JSON.parse(repaired);
+      }
+    } catch (err2) {
+      console.error("JSON structural recovery failed:", err2.message);
+    }
+  }
+  return null;
+};
+
+// 2b. Unpack Raw Extracted Items (Supports Grouped Categories & Half/Full Variants)
+const unpackRawExtractedItems = (rawParsed) => {
+  const flattened = [];
+
+  const processItemList = (items, inheritedCategory = '') => {
+    if (!Array.isArray(items)) return;
+    for (const item of items) {
+      if (!item || typeof item !== 'object') continue;
+
+      const category = (item.category || item.category_hindi || item.section || inheritedCategory || '').trim();
+      const rawName = (item.name || item.dish || item.dish_name || item.dish_hindi || item.title || '').trim();
+      if (!rawName) continue;
+
+      const desc = item.description || item.desc || `Fresh and delicious ${rawName} prepared to order.`;
+      const prepTime = item.preparationTime || item.prepTime || 15;
+      const type = item.type || (item.isVeg === false ? 'non-veg' : 'veg');
+
+      let halfPrice = null;
+      let fullPrice = null;
+
+      if (item.price && typeof item.price === 'object') {
+        for (const [k, v] of Object.entries(item.price)) {
+          const lk = k.toLowerCase();
+          const num = typeof v === 'number' ? v : parseFloat(String(v).replace(/[^0-9.]/g, ''));
+          if (!isNaN(num) && num > 0) {
+            if (lk.includes('half') || lk.includes('हाफ')) halfPrice = num;
+            else if (lk.includes('full') || lk.includes('फुल')) fullPrice = num;
+          }
+        }
+      } else if (item.prices && typeof item.prices === 'object') {
+        for (const [k, v] of Object.entries(item.prices)) {
+          const lk = k.toLowerCase();
+          const num = typeof v === 'number' ? v : parseFloat(String(v).replace(/[^0-9.]/g, ''));
+          if (!isNaN(num) && num > 0) {
+            if (lk.includes('half') || lk.includes('हाफ')) halfPrice = num;
+            else if (lk.includes('full') || lk.includes('फुल')) fullPrice = num;
+          }
+        }
+      }
+
+      if (item.half_price || item.halfPrice || item.half || item.price_half) {
+        const num = parseFloat(String(item.half_price || item.halfPrice || item.half || item.price_half).replace(/[^0-9.]/g, ''));
+        if (!isNaN(num) && num > 0) halfPrice = num;
+      }
+      if (item.full_price || item.fullPrice || item.full || item.price_full) {
+        const num = parseFloat(String(item.full_price || item.fullPrice || item.full || item.price_full).replace(/[^0-9.]/g, ''));
+        if (!isNaN(num) && num > 0) fullPrice = num;
+      }
+
+      if (halfPrice || fullPrice) {
+        const isHindi = /[\u0900-\u097F]/.test(rawName);
+        if (halfPrice) {
+          flattened.push({
+            name: `${rawName} (${isHindi ? 'हाफ' : 'Half'})`,
+            price: halfPrice,
+            category: category,
+            description: desc,
+            preparationTime: prepTime,
+            type: type
+          });
+        }
+        if (fullPrice) {
+          flattened.push({
+            name: `${rawName} (${isHindi ? 'फुल' : 'Full'})`,
+            price: fullPrice,
+            category: category,
+            description: desc,
+            preparationTime: prepTime,
+            type: type
+          });
+        }
+      } else {
+        let singlePrice = item.price;
+        if (typeof singlePrice === 'string') {
+          singlePrice = parseFloat(singlePrice.replace(/[^0-9.]/g, ''));
+        }
+        if (typeof singlePrice === 'number' && !isNaN(singlePrice) && singlePrice > 0) {
+          flattened.push({
+            name: rawName,
+            price: singlePrice,
+            category: category,
+            description: desc,
+            preparationTime: prepTime,
+            type: type
+          });
+        }
+      }
+    }
+  };
+
+  if (Array.isArray(rawParsed)) {
+    for (const entry of rawParsed) {
+      if (entry && typeof entry === 'object') {
+        if (Array.isArray(entry.items)) {
+          const catName = entry.category || entry.category_hindi || entry.section || entry.name || '';
+          processItemList(entry.items, catName);
+        } else {
+          processItemList([entry], entry.category || '');
+        }
+      }
+    }
+  } else if (rawParsed && typeof rawParsed === 'object') {
+    if (Array.isArray(rawParsed.categories)) {
+      for (const cat of rawParsed.categories) {
+        const catName = cat.name || cat.category || cat.section || '';
+        processItemList(cat.items, catName);
+      }
+    } else if (Array.isArray(rawParsed.items)) {
+      processItemList(rawParsed.items, rawParsed.category || '');
+    } else if (Array.isArray(rawParsed.menu)) {
+      processItemList(rawParsed.menu, '');
+    }
+  }
+
+  return flattened;
+};
 
 const validateMenuItem = (item, index) => {
   if (!item || typeof item !== 'object') return null;
@@ -70,22 +216,34 @@ const validateMenuItem = (item, index) => {
   let type = (item.type || '').toLowerCase();
   if (!VALID_TYPES.includes(type)) {
     const n = item.name.toLowerCase();
-    type = n.includes('chicken') || n.includes('mutton') || n.includes('egg') || n.includes('fish') || n.includes('beef') || n.includes('pork') ? 'non-veg' : 'veg';
+    type = (n.includes('chicken') || n.includes('mutton') || n.includes('egg') || n.includes('fish') || n.includes('beef') || n.includes('pork') ||
+            n.includes('चिकन') || n.includes('मटन') || n.includes('अंडा') || n.includes('मछली')) ? 'non-veg' : 'veg';
   }
 
-  let category = (item.category || '').toLowerCase();
-  if (!VALID_CATEGORIES.includes(category)) {
+  // Preserve original extracted category name exactly (Hindi or English). Do NOT force to snacks!
+  let category = item.category ? String(item.category).trim() : '';
+  if (!category) {
     const n = item.name.toLowerCase();
-    if (n.includes('burger')) category = 'burger';
-    else if (n.includes('pizza')) category = 'pizza';
-    else if (n.includes('sandwich')) category = 'sandwich';
-    else if (n.includes('pasta')) category = 'pasta';
-    else if (n.includes('ice tea') || n.includes('iced tea')) category = 'cold-drinks';
-    else if (n.includes('chai') || n.includes('tea') || n.includes('coffee')) category = 'hot-coffee';
-    else if (n.includes('pie') || n.includes('cake') || n.includes('brownie') || n.includes('pastry') || n.includes('ice cream')) category = 'desserts';
-    else if (n.includes('shake')) category = 'shakes';
-    else if (n.includes('beer') || n.includes('drink') || n.includes('juice') || n.includes('soda')) category = 'cold-drinks';
-    else category = 'snacks';
+    if (n.includes('burger') || n.includes('बर्गर')) category = 'Burger';
+    else if (n.includes('pizza') || n.includes('पिज्जा') || n.includes('पिज़्ज़ा')) category = 'Pizza';
+    else if (n.includes('sandwich') || n.includes('सैंडविच')) category = 'Sandwich';
+    else if (n.includes('pasta') || n.includes('पास्ता')) category = 'Pasta';
+    else if (n.includes('ice tea') || n.includes('iced tea')) category = 'Cold Drinks';
+    else if (n.includes('chai') || n.includes('tea') || n.includes('coffee') || n.includes('चाय') || n.includes('कॉफी')) category = 'Beverages';
+    else if (n.includes('pie') || n.includes('cake') || n.includes('brownie') || n.includes('pastry') || n.includes('ice cream') || n.includes('मिठाई') || n.includes('गुलाब जामुन')) category = 'Desserts';
+    else if (n.includes('shake') || n.includes('शेक')) category = 'Shakes';
+    else if (n.includes('roti') || n.includes('naan') || n.includes('paratha') || n.includes('रोटी') || n.includes('नान') || n.includes('पराठा')) category = 'Roti / Breads';
+    else if (n.includes('dal') || n.includes('दाल')) category = 'Dal';
+    else if (n.includes('chawal') || n.includes('rice') || n.includes('pulao') || n.includes('biryani') || n.includes('चावल') || n.includes('बिरयानी')) category = 'Rice / Biryani';
+    else if (n.includes('sabzi') || n.includes('curry') || n.includes('paneer') || n.includes('aloo') || n.includes('सब्जी') || n.includes('पनीर') || n.includes('आलू') || n.includes('छोले') || n.includes('गोभी')) category = 'Main Course';
+    else if (n.includes('thali') || n.includes('थाली')) category = 'Thali';
+    else category = 'General';
+  }
+
+  let preparationTime = 15;
+  if (item.preparationTime) {
+    const parsedTime = parseInt(item.preparationTime, 10);
+    if (!isNaN(parsedTime) && parsedTime > 0) preparationTime = parsedTime;
   }
 
   return {
@@ -95,6 +253,7 @@ const validateMenuItem = (item, index) => {
     type: type,
     category: category,
     description: item.description ? String(item.description).trim() : `Fresh and delicious ${item.name.trim()} prepared to order.`,
+    preparationTime: preparationTime,
     source: {
       bbox: item.bbox && typeof item.bbox === 'object' ? item.bbox : { x: 0, y: 0, width: 0, height: 0 },
       confidence: typeof item.confidence === 'number' ? Math.min(1.0, Math.max(0.1, item.confidence)) : 0.94
@@ -810,36 +969,53 @@ router.post('/extract-menu', [auth, upload.single('image')], async (req, res) =>
     const apiKey = process.env.GEMINI_API_KEY;
 
     let text = '';
-    const extractionPrompt = `Analyze this physical restaurant menu card image and perform full document layout extraction.
-Identify all menu items, multi-column categories, size variants, handwritten/printed prices, and descriptions.
+    const extractionPrompt = `You are an expert OCR & Multilingual Restaurant Menu Digitizer.
+Extract ALL menu dishes, prices, and categories from this restaurant menu card image/document.
 
-Return ONLY a valid JSON array of objects wrapped inside a \`\`\`json ... \`\`\` block with zero conversational text.
-Each object MUST have:
-- id (string e.g. "item_001")
-- name (string, exact dish name)
-- price (number, numeric price in ₹)
-- type (string, "veg" or "non-veg")
-- category (string, must be one of: hot-coffee, cold-coffee, burger, pizza, sandwich, snacks, wraps, pasta, cold-drinks, mocktails, shakes, desserts)
-- description (string, concise 1-sentence dish description)
-- bbox (object with x, y, width, height normalized coordinates)
-- confidence (number float between 0.1 and 1.0)`;
+CRITICAL RULES:
+1. LANGUAGE & SCRIPT FIDELITY (MANDATORY):
+   - Preserve the EXACT language and script as printed on the menu card.
+   - If dish names or categories are printed in HINDI (Devanagari script), extract them in HINDI (Devanagari). DO NOT translate or transliterate into English!
+   - If printed in English, extract in English.
+
+2. MULTI-COLUMN COMPREHENSIVENESS:
+   - Carefully scan all columns (left, middle, right) and all sections.
+   - Extract EVERY SINGLE DISH without skipping anything.
+
+3. HALF & FULL PRICES:
+   - When a dish has HALF and FULL price columns, format the price object as: { "HALF": <number>, "FULL": <number> }
+   - When a dish has a single price, format as: <number>
+
+4. CATEGORIES:
+   - Assign each dish to its exact section header as printed on the card (e.g. "स्पेशल दाल", "पनीर स्पेशल", "देसी सब्जियों का ज़ायका", "सब्जी", "जैन कॉर्नर", "राइस", "परांठा वाली गली", "चटोरियों के चटपटे").
+
+Return ONLY a valid JSON array wrapped inside a \`\`\`json ... \`\`\` block with zero conversational text:
+[
+  {
+    "category": "स्पेशल दाल",
+    "items": [
+      { "name": "दाल फ्राई", "price": { "HALF": 60, "FULL": 110 } },
+      { "name": "पाव भाजी", "price": 90 }
+    ]
+  }
+]`;
 
     // Pass 1: Multimodal Gemini Vision with Enhanced Image Variant
     if (apiKey && apiKey !== "your_gemini_key_here") {
       console.log("👁️ Running Multimodal Vision Extraction (Pass 1)...");
-      const discovered = await getAvailableGeminiModels(apiKey);
-      let models = ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
-      if (discovered && discovered.length > 0) {
-        models = [...new Set([...discovered, ...models])];
-      }
+      const models = ['gemini-2.5-flash', 'gemini-3.5-flash', 'gemini-1.5-flash', 'gemini-flash-latest'];
 
       const payload = {
         contents: [{
           parts: [
             { text: extractionPrompt },
-            { inlineData: { mimeType, data: enhancedBuffer.toString('base64') } }
+            { inlineData: { mimeType: isPdf ? 'application/pdf' : 'image/jpeg', data: enhancedBuffer.toString('base64') } }
           ]
-        }]
+        }],
+        generationConfig: {
+          temperature: 0.1,
+          thinkingConfig: { thinkingBudget: 0 }
+        }
       };
 
       for (const model of models) {
@@ -854,6 +1030,26 @@ Each object MUST have:
             const data = await response.json();
             text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
             if (text) break;
+          } else {
+            // If thinkingConfig is not supported for older model, retry without it
+            const retryPayload = {
+              contents: [{
+                parts: [
+                  { text: extractionPrompt },
+                  { inlineData: { mimeType, data: enhancedBuffer.toString('base64') } }
+                ]
+              }]
+            };
+            const retryRes = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(retryPayload)
+            });
+            if (retryRes.ok) {
+              const retryData = await retryRes.json();
+              text = retryData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+              if (text) break;
+            }
           }
         } catch (e) {
           console.error(`Gemini Vision (${model}) error:`, e.message);
@@ -890,23 +1086,21 @@ ${extractionPrompt}`;
       return res.json({ success: true, menu: { name: "Extracted Menu", items: [] } });
     }
 
-    let cleanJsonText = text;
-    if (cleanJsonText.includes("```json")) {
-      cleanJsonText = cleanJsonText.split("```json")[1].split("```")[0].trim();
-    } else if (cleanJsonText.includes("```")) {
-      cleanJsonText = cleanJsonText.split("```")[1].split("```")[0].trim();
+    const rawParsed = safeParseMenuJson(text);
+    if (!rawParsed) {
+      console.error("Could not parse menu JSON from model output:", text.slice(0, 500));
+      return res.status(422).json({ error: "Could not parse extracted menu data" });
     }
 
-    const rawParsed = JSON.parse(cleanJsonText.trim());
-
-    // Pass 2: Semantic Validation & Normalization
+    // Pass 2: Unpack Categories & Half/Full Variants, then Validate
+    const unpacked = unpackRawExtractedItems(rawParsed);
     const validatedItems = [];
-    if (Array.isArray(rawParsed)) {
-      rawParsed.forEach((rawItem, idx) => {
-        const valid = validateMenuItem(rawItem, idx);
-        if (valid) validatedItems.push(valid);
-      });
-    }
+    unpacked.forEach((rawItem, idx) => {
+      const valid = validateMenuItem(rawItem, idx);
+      if (valid) validatedItems.push(valid);
+    });
+
+    console.log(`✅ Extracted & validated ${validatedItems.length} menu items from document.`);
 
     res.json({
       success: true,

@@ -12,6 +12,14 @@ const dns = require('dns');
 // Load env vars
 dotenv.config();
 
+// Prevent unhandled promise rejections or exceptions from terminating the server process
+process.on('uncaughtException', (err) => {
+  console.error('⚠️ Uncaught Exception:', err.message, err.stack);
+});
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('⚠️ Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
 // Optimize DNS lookup order and configure reliable DNS servers (fixes querySrv ECONNREFUSED on Windows/ISPs)
 try {
   dns.setDefaultResultOrder('ipv4first');

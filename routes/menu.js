@@ -8,6 +8,7 @@ const cloudinary = require('cloudinary').v2;
 const auth = require('../middleware/auth');
 const checkRole = require('../middleware/checkRole');
 const MenuItem = require('../models/MenuItem');
+const Tenant = require('../models/Tenant');
 const { resolveFoodImage } = require('../utils/foodImageResolver');
 
 // Configure Cloudinary
@@ -330,14 +331,21 @@ router.post(
         let numPrice = Math.round(Number(item.price));
         if (isNaN(numPrice) || numPrice < 0) numPrice = 0;
 
-        let category = item.category ? String(item.category).trim() : 'snacks';
-        let categoryId = item.categoryId ? String(item.categoryId).trim() : category.toLowerCase().trim().replace(/\s+/g, '-');
+        let category = item.category ? String(item.category).trim() : 'General';
+        const unicodeSlug = category.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^\p{L}\p{M}\p{N}\-_]+/gu, '');
+        let categoryId = item.categoryId ? String(item.categoryId).trim() : (unicodeSlug && unicodeSlug !== '-' ? unicodeSlug : category.toLowerCase());
         
         let isVeg = true;
         if (item.type !== undefined) {
           isVeg = String(item.type).toLowerCase() === 'veg';
         } else if (item.isVeg !== undefined) {
           isVeg = item.isVeg === true || item.isVeg === 'true';
+        }
+
+        let prepTime = 15;
+        if (item.preparationTime) {
+          const pt = parseInt(item.preparationTime, 10);
+          if (!isNaN(pt) && pt > 0) prepTime = pt;
         }
 
         let imageUrl = item.image || '';
@@ -355,6 +363,7 @@ router.post(
           image: imageUrl,
           isVeg,
           isAvailable: item.isAvailable !== false,
+          preparationTime: prepTime,
           discount: item.discount || { isDiscounted: false, type: 'percentage', value: 0 },
           variants: Array.isArray(item.variants) ? item.variants : [],
           addons: Array.isArray(item.addons) ? item.addons : []
@@ -368,6 +377,44 @@ router.post(
       const inserted = await MenuItem.insertMany(validDocs);
 
       console.log(`✅ Bulk inserted ${inserted.length} menu items for tenant ${tenantId}`);
+
+      // Auto-register and persist new categories in Tenant.settings.categories
+      if (tenantId) {
+        try {
+          const tenant = await Tenant.findById(tenantId);
+          if (tenant) {
+            if (!tenant.settings) tenant.settings = {};
+            if (!Array.isArray(tenant.settings.categories)) tenant.settings.categories = [];
+
+            const existingKeys = new Set(
+              tenant.settings.categories.map(c => (c.name || c.id || '').toLowerCase().trim())
+            );
+
+            let addedAny = false;
+            for (const doc of validDocs) {
+              const catName = (doc.category || '').trim();
+              if (catName && !existingKeys.has(catName.toLowerCase()) && !existingKeys.has(doc.categoryId.toLowerCase())) {
+                existingKeys.add(catName.toLowerCase());
+                existingKeys.add(doc.categoryId.toLowerCase());
+                tenant.settings.categories.push({
+                  id: doc.categoryId,
+                  name: catName,
+                  icon: 'UtensilsCrossed'
+                });
+                addedAny = true;
+              }
+            }
+
+            if (addedAny) {
+              tenant.markModified('settings');
+              await tenant.save();
+              console.log(`✨ Successfully synchronized new categories for tenant ${tenantId}`);
+            }
+          }
+        } catch (catSyncErr) {
+          console.warn('Category sync warning during bulk menu insert:', catSyncErr.message);
+        }
+      }
 
       res.status(201).json({
         success: true,

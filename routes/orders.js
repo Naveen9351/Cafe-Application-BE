@@ -1314,9 +1314,19 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
       });
     }
 
-    const tablePatterns = targetTables.map(t => {
+    const tablePatterns = targetTables.flatMap(t => {
+      const escapedT = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const n = t.replace(/[^0-9]/g, '') || t;
-      return new RegExp(`^(${t}|Table ${n}|table-${n}|${n})$`, 'i');
+      const escapedN = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const cleanNoSpaces = t.replace(/\s+/g, '');
+      const escapedNoSpaces = cleanNoSpaces.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return [
+        new RegExp(`^${escapedT}$`, 'i'),
+        new RegExp(`^Table\\s*${escapedN}$`, 'i'),
+        new RegExp(`^table-${escapedN}$`, 'i'),
+        new RegExp(`^${escapedN}$`, 'i'),
+        new RegExp(`^${escapedNoSpaces}$`, 'i')
+      ];
     });
 
     const query = {

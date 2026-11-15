@@ -62,21 +62,7 @@ const tenantSchema = new mongoose.Schema({
     categories: {
       type: [{ name: String, id: String, icon: String }],
       default: [
-        { id: "all", name: "All", icon: "UtensilsCrossed" },
-        { id: "chai", name: "Chai", icon: "Coffee" },
-        { id: "cold-coffee", name: "Cold Coffee", icon: "Coffee" },
-        { id: "hot-coffee", name: "Hot Coffee", icon: "Coffee" },
-        { id: "burger", name: "Burger", icon: "Sandwich" },
-        { id: "pizza", name: "Pizza", icon: "Pizza" },
-        { id: "chinese", name: "Chinese", icon: "Soup" },
-        { id: "sandwich", name: "Sandwich", icon: "Sandwich" },
-        { id: "snacks", name: "Snacks", icon: "Cookie" },
-        { id: "wraps", name: "Wraps", icon: "Sandwich" },
-        { id: "pasta", name: "Pasta", icon: "UtensilsCrossed" },
-        { id: "cold-drinks", name: "Drinks", icon: "GlassWater" },
-        { id: "mocktails", name: "Mocktails", icon: "Martini" },
-        { id: "shakes", name: "Shakes", icon: "IceCream" },
-        { id: "desserts", name: "Desserts", icon: "Cake" }
+        { id: "all", name: "All", icon: "UtensilsCrossed" }
       ]
     }
   },
