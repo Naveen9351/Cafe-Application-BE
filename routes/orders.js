@@ -1389,26 +1389,40 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
     }
 
     // Free all settled tables in the Table model (and auto-delete temporary tables)
+    // If freeTable is explicitly false (payment received but table not yet vacated), mark as 'billed' without clearing table!
     if (tenantId && Table) {
       try {
-        // Auto-remove any temporary table on bill settlement
-        await Table.deleteMany({
-          tenantId,
-          isTemporary: true,
-          $or: tablePatterns.map(p => ({ tableNumber: { $regex: p } }))
-        });
-
-        // For permanent tables, reset to available
-        await Table.updateMany(
-          {
+        if (req.body.freeTable === false) {
+          await Table.updateMany(
+            {
+              tenantId,
+              $or: tablePatterns.map(p => ({ tableNumber: { $regex: p } }))
+            },
+            { $set: { status: 'billed' } }
+          );
+          if (global.io) {
+            global.io.to(tenantId.toString()).emit('tablesUpdated', { tables: targetTables, status: 'billed' });
+          }
+        } else {
+          // Auto-remove any temporary table on bill settlement
+          await Table.deleteMany({
             tenantId,
-            isTemporary: { $ne: true },
+            isTemporary: true,
             $or: tablePatterns.map(p => ({ tableNumber: { $regex: p } }))
-          },
-          { $set: { status: 'available', currentOrder: null } }
-        );
-        if (global.io) {
-          global.io.to(tenantId.toString()).emit('tablesUpdated', { tables: targetTables, status: 'available' });
+          });
+
+          // For permanent tables, reset to available
+          await Table.updateMany(
+            {
+              tenantId,
+              isTemporary: { $ne: true },
+              $or: tablePatterns.map(p => ({ tableNumber: { $regex: p } }))
+            },
+            { $set: { status: 'available', currentOrder: null } }
+          );
+          if (global.io) {
+            global.io.to(tenantId.toString()).emit('tablesUpdated', { tables: targetTables, status: 'available' });
+          }
         }
       } catch (tblErr) {
         console.warn('Could not update Table collection status:', tblErr.message);
