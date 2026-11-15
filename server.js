@@ -45,6 +45,8 @@ app.use(cors({
       origin.includes('127.0.0.1') ||
       origin.includes('vercel.app') ||
       origin.includes('onrender.com') ||
+      origin.includes('dineviq.com') ||
+      origin.includes('dev-dineviq.com') ||
       origin.endsWith('.vercel.app') ||
       origin.endsWith('.onrender.com') ||
       (process.env.FRONTEND_URL && origin === process.env.FRONTEND_URL)
