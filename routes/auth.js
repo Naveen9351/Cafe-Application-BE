@@ -119,6 +119,7 @@ router.post(
                     permissions: user.permissions || {},
                     tenantId: user.tenantId?._id || null,
                     tenantName: user.tenantId?.name || 'Platform Admin',
+                    operatingMode: user.tenantId?.operatingMode || user.tenantId?.settings?.operatingMode || 'dine_in',
                     restaurantName: user.tenantId?.name || user.name,
                     restaurantLogo: rLogo,
                     logo: rLogo
@@ -158,6 +159,7 @@ router.get('/verify-session', async (req, res) => {
                 permissions: user.permissions || {},
                 tenantId: user.tenantId?._id || null,
                 tenantName: user.tenantId?.name || 'Platform Admin',
+                operatingMode: user.tenantId?.operatingMode || user.tenantId?.settings?.operatingMode || 'dine_in',
                 restaurantName: user.tenantId?.name || user.name,
                 restaurantLogo: rLogo,
                 logo: rLogo
@@ -584,6 +586,7 @@ router.post('/google-login', async (req, res) => {
                 permissions: user.permissions || {},
                 tenantId: user.tenantId?._id || null,
                 tenantName: user.tenantId?.name || 'Platform Admin',
+                operatingMode: user.tenantId?.operatingMode || user.tenantId?.settings?.operatingMode || 'dine_in',
                 restaurantName: user.tenantId?.name || user.name,
                 restaurantLogo: rLogo,
                 logo: rLogo

@@ -9,6 +9,11 @@ const tenantSchema = new mongoose.Schema({
   gstNumber: { type: String, trim: true },
   logo: { type: String, trim: true },
   domain: { type: String, unique: true, sparse: true, trim: true }, // For custom domains
+  operatingMode: {
+    type: String,
+    enum: ['dine_in', 'counter_billing'],
+    default: 'dine_in'
+  },
   subscription: {
     plan: {
       type: String,
@@ -43,6 +48,7 @@ const tenantSchema = new mongoose.Schema({
     }
   ],
   settings: {
+    operatingMode: { type: String, enum: ['dine_in', 'counter_billing'], default: 'dine_in' },
     currency: { type: String, default: 'INR' },
     theme: { type: String, default: 'default' },
     taxPercentage: { type: Number, default: 5 }, // GST %

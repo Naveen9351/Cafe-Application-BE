@@ -40,7 +40,7 @@ router.get('/', [auth, checkRole(['super_admin'])], async (req, res) => {
 // Onboard New Cafe (Super Admin only)
 router.post('/onboard', [auth, checkRole(['super_admin'])], async (req, res) => {
     try {
-        const { businessName, adminName, email, password, phone, address, logo, profileImage, plan, customPrice } = req.body;
+        const { businessName, adminName, email, password, phone, address, logo, profileImage, plan, customPrice, operatingMode } = req.body;
 
         if (!businessName || !email || !password) {
             return res.status(400).json({ error: 'Business name, email, and password are required' });
@@ -69,12 +69,15 @@ router.post('/onboard', [auth, checkRole(['super_admin'])], async (req, res) => 
         const endDate = new Date();
         endDate.setDate(endDate.getDate() + planConfig.duration);
 
+        const targetOperatingMode = operatingMode === 'counter_billing' ? 'counter_billing' : 'dine_in';
+
         // Create Tenant
         const tenant = new Tenant({
             name: businessName,
             email: email.toLowerCase(),
             phone: phone || '',
             address: address || '',
+            operatingMode: targetOperatingMode,
             subscription: {
                 plan: plan || '1_month',
                 price: price,
@@ -95,6 +98,7 @@ router.post('/onboard', [auth, checkRole(['super_admin'])], async (req, res) => 
                 }
             ],
             settings: {
+                operatingMode: targetOperatingMode,
                 logo: logo || 'https://images.unsplash.com/photo-1554118811-1e0d58224f24?auto=format&fit=crop&q=80&w=400'
             }
         });
@@ -128,7 +132,7 @@ router.post('/onboard', [auth, checkRole(['super_admin'])], async (req, res) => 
 // Get Public Tenant Info (For Branding: Name, Logo, Address)
 router.get('/public/:id', async (req, res) => {
     try {
-        const tenant = await Tenant.findById(req.params.id).select('name logo address phone email gstNumber settings subscription subscriptionHistory');
+        const tenant = await Tenant.findById(req.params.id).select('name logo address phone email gstNumber operatingMode settings subscription subscriptionHistory');
         if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
         res.json(tenant);
     } catch (err) {
@@ -329,7 +333,7 @@ router.post('/upgrade-plan', auth, async (req, res) => {
 // Update / Activate Tenant Subscription Plan (Super Admin)
 router.put('/:id/subscription', [auth, checkRole(['super_admin'])], async (req, res) => {
     try {
-        const { plan, customPrice, customEndDate } = req.body; 
+        const { plan, customPrice, customEndDate, operatingMode } = req.body; 
 
         const tenant = await Tenant.findById(req.params.id);
         if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
@@ -370,6 +374,20 @@ router.put('/:id/subscription', [auth, checkRole(['super_admin'])], async (req, 
             }
         };
 
+        if (operatingMode) {
+            const targetMode = operatingMode === 'counter_billing' ? 'counter_billing' : 'dine_in';
+            tenant.operatingMode = targetMode;
+            if (!tenant.settings) tenant.settings = {};
+            tenant.settings.operatingMode = targetMode;
+            tenant.markModified('settings');
+            await Tenant.findByIdAndUpdate(req.params.id, {
+                $set: {
+                    operatingMode: targetMode,
+                    'settings.operatingMode': targetMode
+                }
+            });
+        }
+
         if (!tenant.subscriptionHistory) tenant.subscriptionHistory = [];
         tenant.subscriptionHistory.push({
             plan: planConfig.name || plan,
@@ -378,7 +396,7 @@ router.put('/:id/subscription', [auth, checkRole(['super_admin'])], async (req, 
             endDate: endDate,
             status: 'active',
             actionDate: new Date(),
-            notes: 'Activated by Admin'
+            notes: `Activated by Super Admin${operatingMode ? ` (${tenant.operatingMode})` : ''}`
         });
 
         await tenant.save();
@@ -1108,7 +1126,7 @@ router.get('/:id/explore-analytics', [auth, checkRole(['super_admin'])], async (
 // Update Cafe Tenant Details & Owner User Credentials (Super Admin)
 router.put('/:id/account', [auth, checkRole(['super_admin'])], async (req, res) => {
     try {
-        const { cafeName, adminName, email, phone, password, sendEmailNotification } = req.body;
+        const { cafeName, adminName, email, phone, password, sendEmailNotification, operatingMode } = req.body;
         const tenantId = req.params.id;
 
         const tenant = await Tenant.findById(tenantId);
@@ -1156,6 +1174,19 @@ router.put('/:id/account', [auth, checkRole(['super_admin'])], async (req, res) 
         }
         if (cleanPhone !== undefined) {
             tenant.phone = cleanPhone;
+        }
+        if (operatingMode) {
+            const targetMode = operatingMode === 'counter_billing' ? 'counter_billing' : 'dine_in';
+            tenant.operatingMode = targetMode;
+            if (!tenant.settings) tenant.settings = {};
+            tenant.settings.operatingMode = targetMode;
+            tenant.markModified('settings');
+            await Tenant.findByIdAndUpdate(tenantId, {
+                $set: {
+                    operatingMode: targetMode,
+                    'settings.operatingMode': targetMode
+                }
+            });
         }
         await tenant.save();
 

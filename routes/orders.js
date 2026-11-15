@@ -1325,8 +1325,28 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
     };
     if (tenantId) query.tenantId = tenantId;
 
+    const shouldFreeTable = req.body.freeTable !== false && req.body.freeTable !== 'false';
+
     const activeOrders = await Order.find(query);
     if (!activeOrders || activeOrders.length === 0) {
+      if (shouldFreeTable && tenantId && Table) {
+        try {
+          await Table.updateMany(
+            { tenantId, isTemporary: { $ne: true }, $or: tablePatterns.map(p => ({ tableNumber: { $regex: p } })) },
+            { $set: { status: 'available', currentOrder: null } }
+          );
+          await Table.deleteMany({
+            tenantId,
+            isTemporary: true,
+            $or: tablePatterns.map(p => ({ tableNumber: { $regex: p } }))
+          });
+          if (global.io) {
+            global.io.to(tenantId.toString()).emit('tablesUpdated', { tables: targetTables, status: 'available' });
+          }
+        } catch (tblErr) {
+          console.warn('Could not reset table status:', tblErr.message);
+        }
+      }
       return res.status(200).json({ message: 'No active orders found for Table(s): ' + targetTables.join(', '), count: 0, settledOrders: [] });
     }
 
@@ -1337,7 +1357,14 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
 
     for (let i = 0; i < activeOrders.length; i++) {
       const ord = activeOrders[i];
-      ord.status = 'completed';
+      if (shouldFreeTable) {
+        ord.status = 'completed';
+      } else {
+        // Table is paid/settled but NOT cleared: Keep order active on the table with status 'served'
+        if (ord.status !== 'served' && ord.status !== 'ready') {
+          ord.status = 'served';
+        }
+      }
       ord.paymentStatus = paymentStatus || 'paid';
       if (paymentMethod) ord.paymentMethod = paymentMethod;
 
@@ -1389,10 +1416,10 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
     }
 
     // Free all settled tables in the Table model (and auto-delete temporary tables)
-    // If freeTable is explicitly false (payment received but table not yet vacated), mark as 'billed' without clearing table!
+    // If shouldFreeTable is false (payment received but table not yet vacated), mark as 'billed' without clearing table!
     if (tenantId && Table) {
       try {
-        if (req.body.freeTable === false) {
+        if (!shouldFreeTable) {
           await Table.updateMany(
             {
               tenantId,
