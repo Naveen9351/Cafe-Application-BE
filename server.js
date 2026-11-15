@@ -119,6 +119,7 @@ app.use((err, req, res, next) => {
 
 // Database Connection with High-Speed Connection Pooling
 const seedDatabase = require('./utils/seeder');
+const { initProdToDevMirror } = require('./utils/prodToDevMirror');
 
 const mongoURI = process.env.MONGO_URI;
 
@@ -135,6 +136,7 @@ if (!mongoURI) {
     .then(() => {
       console.log('⚡ MongoDB Connected with High-Speed Connection Pool (min: 10, max: 50)');
       seedDatabase();
+      initProdToDevMirror(mongoose.connection);
     })
     .catch(err => console.error('❌ MongoDB Connection Error:', err));
 }
