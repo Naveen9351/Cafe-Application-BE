@@ -273,7 +273,7 @@ const querySarvam = async (prompt, systemInstruction = "") => {
   for (const model of models) {
     try {
       const messages = [];
-      const enforcedSystem = (systemInstruction || "You are Khushi AI, the smart restaurant operations manager and sales growth assistant.") + " Always refer to yourself simply as Khushi AI. Never mention underlying model or provider names.";
+      const enforcedSystem = (systemInstruction || "You are DineviQ AI, the smart restaurant operations manager and sales growth assistant.") + " Always refer to yourself simply as DineviQ AI. Never mention underlying model or provider names.";
       messages.push({ role: "system", content: enforcedSystem });
       messages.push({ role: "user", content: prompt });
 
@@ -384,7 +384,7 @@ const queryGemini = async (prompt, systemInstruction = "") => {
     const pollUrl = 'https://text.pollinations.ai/';
     const pollPayload = {
       messages: [
-        { role: 'system', content: systemInstruction || 'You are Khushi AI, an intelligent restaurant store manager and sales growth assistant. Always refer to yourself as Khushi AI.' },
+        { role: 'system', content: systemInstruction || 'You are DineviQ AI, an intelligent restaurant store manager and sales growth assistant. Always refer to yourself as DineviQ AI.' },
         { role: 'user', content: prompt }
       ],
       model: 'openai'
@@ -513,7 +513,7 @@ router.post('/copilot', auth, async (req, res) => {
       return `${m.name} (₹${m.price || 0}, ${cat})`;
     }).slice(0, 25).join(', ');
 
-    const tenantContextPrompt = `You are Khushi AI, the dedicated executive restaurant operations manager and sales growth advisor for ${businessName}.
+    const tenantContextPrompt = `You are DineviQ AI, the dedicated executive restaurant operations manager and sales growth advisor for ${businessName}.
 You have direct real-time access to ${businessName}'s operational database:
 - Active Menu: ${menuItems.length} dishes registered [${menuSummary || 'None'}]
 - Financials:
@@ -527,7 +527,7 @@ You have direct real-time access to ${businessName}'s operational database:
 - Detected Operational Anomalies: ${anomalies.length > 0 ? anomalies.join(' | ') : 'All operational metrics within standard parameters'}
 
 Formatting & Tone Directives (MANDATORY):
-1. Identity: Always introduce yourself only as "Khushi AI" (never mention engine names, LLM models, version numbers, or internal details).
+1. Identity: Always introduce yourself only as "DineviQ AI" (never mention engine names, LLM models, version numbers, or internal details).
 2. NO EMOJI ICONS: DO NOT use decorative emojis (such as ✨, 💡, 🎁, 🚀, 📈, ⚠️, 🔍, 🔒, 💰, 👉, etc.) as icons, headers, or bullet prefixes. Keep the output clean, modern, and professional.
 3. Accuracy: Always cite the exact live numbers given above (Total Gross Revenue: ₹${Math.round(effectiveRev).toLocaleString('en-IN')}, AOV: ₹${Math.round(avgOrderValue)}, Total Orders: ${orders.length}, Completed: ${completedOrders.length}). NEVER state that revenue is ₹0 or that there are no sales.
 4. Engaging Strategy: Present sales combos, upsell tactics, and growth levers using clear Markdown tables and bold titles.
@@ -547,7 +547,7 @@ Formatting & Tone Directives (MANDATORY):
 
     // Dynamic Intelligent Fallback using exact tenant data without emoji icons
     if (['hi', 'hello', 'hey', 'greetings', 'help'].includes(normalizedQuery) || normalizedQuery.includes('who are you') || normalizedQuery.includes('what can you do')) {
-      const reply = `Hello! I am **Khushi AI**, your smart restaurant growth & operations assistant for **${businessName}**.
+      const reply = `Hello! I am **DineviQ AI**, your smart restaurant growth & operations assistant for **${businessName}**.
 
 ### Live Store Snapshot
 | Metric | Current Status |
@@ -649,7 +649,7 @@ All raw material inventory levels are currently within safe operational limits.`
       return res.json({ reply, anomalies });
     }
 
-    const reply = `### Khushi AI for ${businessName}
+    const reply = `### DineviQ AI for ${businessName}
 I have real-time access to your **${menuItems.length} menu dishes**, **${validOrders.length} orders** (₹${Math.round(totalRev).toLocaleString('en-IN')} gross revenue), and **${inventory.length} inventory items**.
 
 How can I assist you?
