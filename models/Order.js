@@ -15,6 +15,8 @@ const orderSchema = new mongoose.Schema({
   // Table number is now tenant-specific string or ID
   orderNumber: { type: String, index: true, trim: true },
   tableNumber: { type: String, required: true },
+  originalTable: { type: String, trim: true },
+  mergedInto: { type: String, trim: true },
   roundNumber: { type: Number, default: 1 },
 
   // Who took the order (optional, could be self-service via QR)
@@ -22,7 +24,7 @@ const orderSchema = new mongoose.Schema({
 
   items: [
     {
-      item: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem', required: true },
+      item: { type: mongoose.Schema.Types.ObjectId, ref: 'MenuItem', required: false },
       quantity: { type: Number, required: true, min: 1 },
       price: { type: Number, required: true }, // Store price at time of order
       name: { type: String }, // Snapshot of name

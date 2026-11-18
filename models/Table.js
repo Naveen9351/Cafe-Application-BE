@@ -25,8 +25,20 @@ const TableSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['available', 'occupied', 'ordering', 'preparing', 'bill_requested', 'payment_pending', 'reserved', 'cleaning'],
+    enum: ['available', 'occupied', 'ordering', 'preparing', 'bill_requested', 'payment_pending', 'billed', 'reserved', 'cleaning', 'merged'],
     default: 'available'
+  },
+  mergedInto: {
+    type: String,
+    default: null,
+    trim: true
+  },
+  mergedWith: [{
+    type: String,
+    trim: true
+  }],
+  mergedAt: {
+    type: Date
   },
   isTemporary: {
     type: Boolean,

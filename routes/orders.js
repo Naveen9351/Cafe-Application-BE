@@ -89,6 +89,32 @@ router.post(
         return res.status(403).json({ error: 'Monthly order limit reached. Upgrade plan.' });
       }
 
+      // 0.8 Check Table Merge: Route order into primary table if source table was merged
+      let resolvedTableNumber = tableNumber || 'Counter';
+      let originalTableNumber = null;
+      let mergedIntoTarget = null;
+
+      if (tableNumber && tableNumber !== 'Takeaway' && tableNumber !== 'Counter' && tableNumber !== 'Walk-in') {
+        try {
+          const Table = require('../models/Table');
+          const cleanT = String(tableNumber).replace(/^Table\s*/i, '').trim();
+          const tblDoc = await Table.findOne({
+            tenantId,
+            $or: [
+              { tableNumber: cleanT },
+              { tableNumber: `Table ${cleanT}` }
+            ]
+          });
+          if (tblDoc && tblDoc.mergedInto) {
+            originalTableNumber = tableNumber;
+            resolvedTableNumber = tblDoc.mergedInto;
+            mergedIntoTarget = tblDoc.mergedInto;
+          }
+        } catch (mErr) {
+          console.warn('Table merge lookup warning:', mErr.message);
+        }
+      }
+
       // 1. Fetch all items (Security: Verify prices server-side)
       const cleanItemId = (raw) => {
         if (!raw) return '';
@@ -124,7 +150,8 @@ router.post(
         }
       }
 
-      if (dbItems.length === 0) {
+      const hasOpenItems = items.some(i => i.isOpenItem || i.isCustom || !cleanItemId(i.id || i.itemId));
+      if (dbItems.length === 0 && !hasOpenItems) {
         return res.status(400).json({ error: 'Invalid items or items not found for this tenant' });
       }
 
@@ -219,6 +246,30 @@ router.post(
             itemPaymentMethod: clientItem.itemPaymentMethod || req.body.paymentMethod || null,
             isDirect: isItemDirect
           });
+        } else if (clientItem.name && (clientItem.price !== undefined && clientItem.price !== null)) {
+          // Fallback / Open Emergency Item Support (off-menu items, cigarettes, custom counter charges)
+          const quantity = Number(clientItem.quantity) || 1;
+          const basePrice = Math.max(0, Number(clientItem.price) || 0);
+          const itemTotal = basePrice * quantity;
+          subTotal += itemTotal;
+
+          const isItemDirect = Boolean(req.body.isDirect || clientItem.isDirect);
+          const itemStatus = isItemDirect ? 'served' : (status === 'preparing' ? 'preparing' : (clientItem.itemStatus || 'pending'));
+          const itemIsPaid = Boolean(clientItem.isPaid || paymentStatus === 'paid');
+
+          orderItems.push({
+            name: String(clientItem.name).trim(),
+            quantity: quantity,
+            price: basePrice,
+            variant: null,
+            addons: [],
+            specialNotes: clientItem.specialNotes || clientItem.notes || '',
+            itemStatus,
+            isPaid: itemIsPaid,
+            paidAt: itemIsPaid ? new Date() : null,
+            itemPaymentMethod: clientItem.itemPaymentMethod || req.body.paymentMethod || null,
+            isDirect: isItemDirect
+          });
         }
       }
 
@@ -287,9 +338,16 @@ router.post(
       let resolvedRound = req.body.roundNumber ? Number(req.body.roundNumber) : null;
       if (!resolvedRound && tableNumber && tableNumber !== 'Takeaway' && tableNumber !== 'Counter' && tableNumber !== 'Walk-in') {
         try {
+          const cleanTbl = String(tableNumber).replace(/^Table\s*/i, '').trim();
+          const escapedTbl = cleanTbl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
           const activeCount = await Order.countDocuments({
             tenantId,
-            tableNumber: String(tableNumber),
+            $or: [
+              { tableNumber: cleanTbl },
+              { tableNumber: { $regex: new RegExp(`^Table\\s*${escapedTbl}$`, 'i') } },
+              { table: cleanTbl },
+              { table: { $regex: new RegExp(`^Table\\s*${escapedTbl}$`, 'i') } }
+            ],
             status: { $in: ['pending', 'confirmed', 'preparing', 'ready', 'served'] }
           });
           resolvedRound = activeCount + 1;
@@ -303,7 +361,9 @@ router.post(
       const newOrder = new Order({
         tenantId,
         orderNumber: uniqueOrderNumber,
-        tableNumber: tableNumber || 'Counter',
+        tableNumber: resolvedTableNumber || 'Counter',
+        originalTable: originalTableNumber,
+        mergedInto: mergedIntoTarget,
         roundNumber: resolvedRound,
         items: orderItems,
         subTotal,
@@ -314,6 +374,7 @@ router.post(
         paymentMethod: req.body.paymentMethod || 'UPI',
         orderType: req.body.orderType || (tableNumber === 'Takeaway' || tableNumber === 'Counter' ? 'takeaway' : 'dine_in'),
         customerDetails: customerDetails || {},
+        notes: req.body.notes || req.body.specialInstructions || '',
         status: finalStatus,
         paymentStatus: calculatedPaymentStatus,
         loyaltyPointsEarned: pointsEarned,
@@ -1425,6 +1486,54 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
       }
     }
 
+    // Enterprise Dining Session Consolidation:
+    // If multiple rounds (e.g. Round 1, 2, 3) were settled on this table, consolidate into 1 single completed order
+    if (shouldFreeTable && activeOrders.length > 1) {
+      const primaryOrder = activeOrders[0];
+      let combinedSubTotal = Number(primaryOrder.subTotal) || 0;
+      let combinedTotal = Number(primaryOrder.total) || 0;
+      let combinedTax = Number(primaryOrder.taxAmount) || 0;
+      let combinedDiscount = Number(primaryOrder.discountAmount) || 0;
+
+      for (let i = 1; i < activeOrders.length; i++) {
+        const childOrd = activeOrders[i];
+        combinedSubTotal += (Number(childOrd.subTotal) || 0);
+        combinedTotal += (Number(childOrd.total) || 0);
+        combinedTax += (Number(childOrd.taxAmount) || 0);
+        combinedDiscount += (Number(childOrd.discountAmount) || 0);
+
+        (childOrd.items || []).forEach(it => {
+          primaryOrder.items.push(it);
+        });
+
+        await Order.deleteOne({ _id: childOrd._id });
+      }
+
+      primaryOrder.subTotal = Math.round(combinedSubTotal * 100) / 100;
+      primaryOrder.total = Math.round(combinedTotal * 100) / 100;
+      primaryOrder.taxAmount = Math.round(combinedTax * 100) / 100;
+      primaryOrder.discountAmount = combinedDiscount;
+      primaryOrder.paidAmount = actualSettledAmt !== null ? actualSettledAmt : primaryOrder.total;
+      primaryOrder.settledAmount = primaryOrder.paidAmount;
+      primaryOrder.status = 'completed';
+      primaryOrder.paymentStatus = paymentStatus || 'paid';
+      if (paymentMethod) primaryOrder.paymentMethod = paymentMethod;
+
+      primaryOrder.items.forEach(it => {
+        it.isPaid = true;
+        it.itemStatus = 'served';
+      });
+
+      await primaryOrder.save();
+      settledOrders.length = 0;
+      settledOrders.push(primaryOrder);
+
+      if (global.io && primaryOrder.tenantId) {
+        global.io.to(primaryOrder.tenantId.toString()).emit('orderUpdate', primaryOrder);
+        global.io.to(primaryOrder.tenantId.toString()).emit('ordersRefresh');
+      }
+    }
+
     // Free all settled tables in the Table model (and auto-delete temporary tables)
     // If shouldFreeTable is false (payment received but table not yet vacated), mark as 'billed' without clearing table!
     if (tenantId && Table) {
@@ -1433,7 +1542,10 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
           await Table.updateMany(
             {
               tenantId,
-              $or: tablePatterns.map(p => ({ tableNumber: { $regex: p } }))
+              $or: [
+                ...tablePatterns.map(p => ({ tableNumber: { $regex: p } })),
+                { mergedInto: { $in: targetTables } }
+              ]
             },
             { $set: { status: 'billed' } }
           );
@@ -1448,14 +1560,23 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
             $or: tablePatterns.map(p => ({ tableNumber: { $regex: p } }))
           });
 
-          // For permanent tables, reset to available
+          // For permanent tables, reset to available and clear merged state
           await Table.updateMany(
             {
               tenantId,
-              isTemporary: { $ne: true },
-              $or: tablePatterns.map(p => ({ tableNumber: { $regex: p } }))
+              $or: [
+                ...tablePatterns.map(p => ({ tableNumber: { $regex: p } })),
+                { mergedInto: { $in: targetTables } }
+              ]
             },
-            { $set: { status: 'available', currentOrder: null } }
+            {
+              $set: {
+                status: 'available',
+                currentOrder: null,
+                mergedInto: null,
+                mergedWith: []
+              }
+            }
           );
           if (global.io) {
             global.io.to(tenantId.toString()).emit('tablesUpdated', { tables: targetTables, status: 'available' });
@@ -1594,27 +1715,50 @@ router.post('/:id/append-items', auth, async (req, res) => {
     if (!order) return res.status(404).json({ error: 'Order not found' });
 
     let addedTotal = 0;
+    let hasKitchenItems = false;
+
     for (const clientItem of items) {
       const quantity = Number(clientItem.quantity) || 1;
       const price = Number(clientItem.price) || 0;
       const itemTotal = price * quantity;
       addedTotal += itemTotal;
 
-      order.items.push({
-        item: mongoose.Types.ObjectId.isValid(clientItem.id || clientItem.itemId) ? (clientItem.id || clientItem.itemId) : undefined,
-        name: clientItem.name,
-        quantity,
-        price,
-        variant: clientItem.variant || null,
-        addons: clientItem.addons || [],
-        itemStatus: clientItem.itemStatus || 'served',
-        isDirect: clientItem.isDirect !== undefined ? clientItem.isDirect : true,
-        isPaid: Boolean(clientItem.isPaid)
-      });
+      const itemStatus = clientItem.itemStatus || 'served';
+      if (itemStatus === 'preparing') hasKitchenItems = true;
+
+      // Smart Item Grouping: If identical unpaid item with same status exists, merge quantities
+      const clientName = String(clientItem.name || '').trim().toLowerCase();
+      const existingUnpaid = (order.items || []).find(it =>
+        !it.isPaid &&
+        String(it.name || '').trim().toLowerCase() === clientName &&
+        it.itemStatus === itemStatus &&
+        JSON.stringify(it.variant || null) === JSON.stringify(clientItem.variant || null) &&
+        !it.specialNotes && !clientItem.specialNotes && !clientItem.notes
+      );
+
+      if (existingUnpaid) {
+        existingUnpaid.quantity += quantity;
+      } else {
+        order.items.push({
+          item: mongoose.Types.ObjectId.isValid(clientItem.id || clientItem.itemId) ? (clientItem.id || clientItem.itemId) : undefined,
+          name: clientItem.name,
+          quantity,
+          price,
+          variant: clientItem.variant || null,
+          addons: clientItem.addons || [],
+          specialNotes: clientItem.specialNotes || clientItem.notes || '',
+          itemStatus,
+          isDirect: clientItem.isDirect !== undefined ? clientItem.isDirect : true,
+          isPaid: Boolean(clientItem.isPaid)
+        });
+      }
     }
 
     order.subTotal = Math.round((Number(order.subTotal || 0) + addedTotal) * 100) / 100;
     order.total = Math.round((Number(order.total || 0) + addedTotal) * 100) / 100;
+    if (hasKitchenItems && order.status !== 'preparing') {
+      order.status = 'preparing';
+    }
 
     await order.save();
 
@@ -1622,12 +1766,60 @@ router.post('/:id/append-items', auth, async (req, res) => {
 
     if (global.io && order.tenantId) {
       global.io.to(order.tenantId.toString()).emit('orderUpdate', order);
+      global.io.to(order.tenantId.toString()).emit('ordersRefresh');
+      if (hasKitchenItems) {
+        global.io.to(order.tenantId.toString()).emit('newKOT', {
+          orderId: order._id,
+          orderNumber: order.orderNumber,
+          tableNumber: order.tableNumber,
+          items: items.filter(i => i.itemStatus === 'preparing')
+        });
+      }
     }
 
     res.json(order);
   } catch (err) {
     console.error('Append items to order error:', err);
     res.status(500).json({ error: 'Server error: ' + err.message });
+  }
+});
+
+// UPDATE Order Details / Items (Admin/Staff inline edit, quantity increment/decrement, unpaid item removal)
+router.put('/:id', auth, async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'Invalid Order ID' });
+    }
+
+    const filter = { _id: req.params.id };
+    if (req.user.role !== 'super_admin' && req.user.tenantId) {
+      filter.tenantId = req.user.tenantId;
+    }
+
+    const order = await Order.findOne(filter);
+    if (!order) return res.status(404).json({ error: 'Order not found or unauthorized' });
+
+    const { items, totalAmount, status, notes } = req.body;
+    if (Array.isArray(items)) {
+      order.items = items;
+      const calculatedTotal = items.reduce((sum, it) => sum + ((Number(it.price) || 0) * (Number(it.quantity) || 1)), 0);
+      order.totalAmount = typeof totalAmount === 'number' ? totalAmount : calculatedTotal;
+      order.subTotal = calculatedTotal;
+    }
+    if (status) order.status = status;
+    if (notes !== undefined) order.notes = notes;
+
+    await order.save();
+
+    if (global.io && order.tenantId) {
+      global.io.to(order.tenantId.toString()).emit('orderUpdated', order);
+      global.io.to(order.tenantId.toString()).emit('ordersRefresh');
+    }
+
+    res.json({ success: true, order });
+  } catch (err) {
+    console.error('Update order error:', err);
+    res.status(500).json({ error: 'Failed to update order: ' + err.message });
   }
 });
 
@@ -1646,8 +1838,31 @@ router.delete('/:id', auth, async (req, res) => {
     const order = await Order.findOneAndDelete(filter);
     if (!order) return res.status(404).json({ error: 'Order not found or unauthorized' });
 
+    // If no more active orders exist for this table, set table status to 'available'
+    if (order.tableNumber && order.tenantId && Table) {
+      const remainingOrders = await Order.countDocuments({
+        tenantId: order.tenantId,
+        tableNumber: order.tableNumber,
+        status: { $nin: ['completed', 'cancelled'] }
+      });
+      if (remainingOrders === 0) {
+        await Table.updateMany(
+          {
+            tenantId: order.tenantId,
+            $or: [
+              { tableNumber: order.tableNumber },
+              { tableNumber: `Table ${order.tableNumber.replace(/^Table\s*/i, '')}` },
+              { tableNumber: order.tableNumber.replace(/^Table\s*/i, '') }
+            ]
+          },
+          { $set: { status: 'available', customerName: '', occupiedAt: null, activeOrdersCount: 0 } }
+        );
+      }
+    }
+
     if (global.io && order.tenantId) {
       global.io.to(order.tenantId.toString()).emit('orderDeleted', { id: req.params.id });
+      global.io.to(order.tenantId.toString()).emit('ordersRefresh');
     }
 
     res.json({ message: 'Order deleted successfully' });

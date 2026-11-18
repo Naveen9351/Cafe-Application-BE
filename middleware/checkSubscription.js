@@ -16,10 +16,10 @@ const checkSubscriptionMiddleware = async (req, res, next) => {
         return next();
     }
 
-    const tenantId = req.tenantId || req.user?.tenantId;
+    const tenantId = req.tenantId || req.user?.tenantId || req.headers['x-tenant-id'] || req.body?.tenantId;
 
     if (!tenantId) {
-        return res.status(400).json({ error: 'Tenant context missing' });
+        return next();
     }
 
     const tenantKey = tenantId.toString();

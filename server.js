@@ -98,6 +98,7 @@ app.use('/api/tickets', require('./routes/tickets'));
 app.use('/api/staff', require('./routes/staff'));
 app.use('/api/khata', require('./routes/khata'));
 app.use('/api/invoices', require('./routes/invoices'));
+app.use('/api/whatsapp', require('./routes/whatsapp'));
 app.use('/api/admin', require('./routes/admin'));
 app.use('/api/analytics', require('./routes/analytics'));
 
@@ -168,6 +169,7 @@ io.on('connection', (socket) => {
 });
 
 const cleanupTask = require('./utils/cleanup');
+const { autoRestoreSavedSessions } = require('./utils/whatsappService');
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
@@ -175,4 +177,5 @@ server.listen(PORT, () => {
 
   setTimeout(cleanupTask, 5000);
   setInterval(cleanupTask, 24 * 60 * 60 * 1000);
+  setTimeout(autoRestoreSavedSessions, 6000);
 });

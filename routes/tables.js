@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const Table = require('../models/Table');
+const Order = require('../models/Order');
 const auth = require('../middleware/auth');
 const checkRole = require('../middleware/checkRole');
 
@@ -391,6 +392,171 @@ router.put('/service-requests/:id', async (req, res) => {
   } catch (err) {
     console.error('Update service request error:', err);
     res.status(500).json({ error: 'Failed to update request' });
+  }
+});
+
+// POST /api/tables/merge - Merge one or more tables into a primary table
+router.post('/merge', auth, async (req, res) => {
+  try {
+    const tenantId = req.user.tenantId || req.tenantId;
+    const { primaryTable, tablesToMerge } = req.body;
+
+    if (!tenantId) {
+      return res.status(400).json({ error: 'Tenant ID is required' });
+    }
+    if (!primaryTable || !Array.isArray(tablesToMerge) || tablesToMerge.length === 0) {
+      return res.status(400).json({ error: 'primaryTable and tablesToMerge array are required' });
+    }
+
+    const cleanPrimary = String(primaryTable).replace(/^Table\s*/i, '').trim();
+    const cleanMergeList = tablesToMerge.map(t => String(t).replace(/^Table\s*/i, '').trim()).filter(Boolean);
+
+    // 1. Update the primary table's mergedWith array
+    const primaryDoc = await Table.findOne({
+      tenantId,
+      $or: [
+        { tableNumber: cleanPrimary },
+        { tableNumber: `Table ${cleanPrimary}` }
+      ]
+    });
+
+    if (primaryDoc) {
+      const currentMerged = primaryDoc.mergedWith || [];
+      const updatedMerged = Array.from(new Set([...currentMerged, ...cleanMergeList]));
+      primaryDoc.mergedWith = updatedMerged;
+      await primaryDoc.save();
+    }
+
+    // 2. Mark the merged tables as status: 'merged', mergedInto: cleanPrimary
+    for (const t of cleanMergeList) {
+      await Table.updateMany(
+        {
+          tenantId,
+          $or: [
+            { tableNumber: t },
+            { tableNumber: `Table ${t}` }
+          ]
+        },
+        {
+          $set: {
+            status: 'merged',
+            mergedInto: cleanPrimary,
+            mergedAt: new Date()
+          }
+        }
+      );
+
+      // 3. Move/alias any active orders from merged tables to primaryTable so the total bill combines
+      const activeOrdersToTransfer = await Order.find({
+        tenantId,
+        status: { $nin: ['completed', 'cancelled'] },
+        $or: [
+          { tableNumber: t },
+          { tableNumber: `Table ${t}` }
+        ]
+      });
+
+      for (const ord of activeOrdersToTransfer) {
+        if (!ord.originalTable) {
+          ord.originalTable = ord.tableNumber;
+        }
+        ord.tableNumber = cleanPrimary;
+        ord.mergedInto = cleanPrimary;
+        await ord.save();
+      }
+    }
+
+    if (global.io) {
+      global.io.to(tenantId.toString()).emit('tablesUpdated', { action: 'merged', primaryTable: cleanPrimary, mergedTables: cleanMergeList });
+      global.io.to(tenantId.toString()).emit('ordersRefresh');
+    }
+
+    res.json({
+      success: true,
+      message: `Tables [${cleanMergeList.join(', ')}] successfully merged into Table ${cleanPrimary}`,
+      primaryTable: cleanPrimary,
+      mergedTables: cleanMergeList
+    });
+  } catch (err) {
+    console.error('Table merge error:', err);
+    res.status(500).json({ error: 'Failed to merge tables: ' + err.message });
+  }
+});
+
+// POST /api/tables/demerge - Demerge a table from its primary table
+router.post('/demerge', auth, async (req, res) => {
+  try {
+    const tenantId = req.user.tenantId || req.tenantId;
+    const { primaryTable, tableToDemerge } = req.body;
+
+    if (!tenantId) {
+      return res.status(400).json({ error: 'Tenant ID is required' });
+    }
+    const cleanPrimary = String(primaryTable || '').replace(/^Table\s*/i, '').trim();
+    const cleanDemerge = String(tableToDemerge || '').replace(/^Table\s*/i, '').trim();
+
+    // 1. Remove from primary table's mergedWith
+    if (cleanPrimary) {
+      await Table.updateMany(
+        {
+          tenantId,
+          $or: [
+            { tableNumber: cleanPrimary },
+            { tableNumber: `Table ${cleanPrimary}` }
+          ]
+        },
+        { $pull: { mergedWith: cleanDemerge } }
+      );
+    }
+
+    // 2. Reset the demerged table
+    await Table.updateMany(
+      {
+        tenantId,
+        $or: [
+          { tableNumber: cleanDemerge },
+          { tableNumber: `Table ${cleanDemerge}` }
+        ]
+      },
+      {
+        $set: {
+          status: 'available',
+          mergedInto: null,
+          mergedAt: null
+        }
+      }
+    );
+
+    // 3. Restore any orders that originally belonged to tableToDemerge
+    if (cleanDemerge) {
+      await Order.updateMany(
+        {
+          tenantId,
+          status: { $nin: ['completed', 'cancelled'] },
+          originalTable: { $in: [cleanDemerge, `Table ${cleanDemerge}`] }
+        },
+        {
+          $set: {
+            tableNumber: cleanDemerge,
+            mergedInto: null
+          }
+        }
+      );
+    }
+
+    if (global.io) {
+      global.io.to(tenantId.toString()).emit('tablesUpdated', { action: 'demerged', primaryTable: cleanPrimary, demergedTable: cleanDemerge });
+      global.io.to(tenantId.toString()).emit('ordersRefresh');
+    }
+
+    res.json({
+      success: true,
+      message: `Table ${cleanDemerge} demerged successfully`,
+      demergedTable: cleanDemerge
+    });
+  } catch (err) {
+    console.error('Table demerge error:', err);
+    res.status(500).json({ error: 'Failed to demerge table: ' + err.message });
   }
 });
 

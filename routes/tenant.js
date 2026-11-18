@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const Tenant = require('../models/Tenant');
 const auth = require('../middleware/auth');
 const checkRole = require('../middleware/checkRole');
+const { invalidateSubscriptionCache } = require('../middleware/checkSubscription');
 
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
@@ -252,6 +253,7 @@ router.put('/:id', auth, async (req, res) => {
 
         tenant.markModified('settings');
         await tenant.save();
+        invalidateSubscriptionCache(tenant._id);
         res.json(tenant);
     } catch (err) {
         console.error("Update tenant error:", err);
@@ -318,6 +320,7 @@ router.post('/upgrade-plan', auth, async (req, res) => {
         });
 
         await tenant.save();
+        invalidateSubscriptionCache(tenant._id);
         res.json({ 
             success: true, 
             message: `Payment of ₹${actualPrice} verified! Successfully activated ${chosenPlan.name}!`, 
@@ -400,6 +403,7 @@ router.put('/:id/subscription', [auth, checkRole(['super_admin'])], async (req, 
         });
 
         await tenant.save();
+        invalidateSubscriptionCache(tenant._id);
         res.json(tenant);
     } catch (err) {
         console.error("Subscription update error:", err);
@@ -454,6 +458,7 @@ router.put('/:id/deactivate-subscription', [auth, checkRole(['super_admin'])], a
         });
 
         await tenant.save();
+        invalidateSubscriptionCache(tenant._id);
         res.json({
             success: true,
             tenant,
@@ -936,6 +941,29 @@ router.get('/:id/explore-analytics', [auth, checkRole(['super_admin'])], async (
         const startOf30Days = new Date(startOfToday.getTime() - 29 * 24 * 60 * 60 * 1000);
         const startOfYear = new Date(now.getFullYear(), 0, 1);
 
+        const tenantMatch = {
+            tenantId: { $in: [tId, String(tenantId)] },
+            status: { $ne: 'cancelled' }
+        };
+
+        const revenueSumExpr = {
+            $sum: {
+                $ifNull: [
+                    '$settledAmount',
+                    { $ifNull: ['$finalAmount', { $ifNull: ['$total', 0] }] }
+                ]
+            }
+        };
+
+        const revenueAvgExpr = {
+            $avg: {
+                $ifNull: [
+                    '$settledAmount',
+                    { $ifNull: ['$finalAmount', { $ifNull: ['$total', 0] }] }
+                ]
+            }
+        };
+
         // Run aggregations in parallel
         const [
             lifetimeStats,
@@ -950,29 +978,29 @@ router.get('/:id/explore-analytics', [auth, checkRole(['super_admin'])], async (
         ] = await Promise.all([
             // 1. Lifetime Totals
             Order.aggregate([
-                { $match: { tenantId: tId, status: { $ne: 'cancelled' } } },
-                { $group: { _id: null, totalRevenue: { $sum: '$total' }, totalOrders: { $sum: 1 }, avgOrderValue: { $avg: '$total' } } }
+                { $match: tenantMatch },
+                { $group: { _id: null, totalRevenue: revenueSumExpr, totalOrders: { $sum: 1 }, avgOrderValue: revenueAvgExpr } }
             ]),
 
             // 2. Today Stats
             Order.aggregate([
-                { $match: { tenantId: tId, status: { $ne: 'cancelled' }, createdAt: { $gte: startOfToday } } },
-                { $group: { _id: null, revenue: { $sum: '$total' }, orders: { $sum: 1 } } }
+                { $match: { ...tenantMatch, createdAt: { $gte: startOfToday } } },
+                { $group: { _id: null, revenue: revenueSumExpr, orders: { $sum: 1 } } }
             ]),
 
             // 3. Yesterday Stats
             Order.aggregate([
-                { $match: { tenantId: tId, status: { $ne: 'cancelled' }, createdAt: { $gte: startOfYesterday, $lt: startOfToday } } },
-                { $group: { _id: null, revenue: { $sum: '$total' }, orders: { $sum: 1 } } }
+                { $match: { ...tenantMatch, createdAt: { $gte: startOfYesterday, $lt: startOfToday } } },
+                { $group: { _id: null, revenue: revenueSumExpr, orders: { $sum: 1 } } }
             ]),
 
             // 4. Last 7 Days (Day-wise)
             Order.aggregate([
-                { $match: { tenantId: tId, status: { $ne: 'cancelled' }, createdAt: { $gte: startOf7Days } } },
+                { $match: { ...tenantMatch, createdAt: { $gte: startOf7Days } } },
                 {
                     $group: {
                         _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-                        revenue: { $sum: '$total' },
+                        revenue: revenueSumExpr,
                         orders: { $sum: 1 }
                     }
                 },
@@ -981,11 +1009,11 @@ router.get('/:id/explore-analytics', [auth, checkRole(['super_admin'])], async (
 
             // 5. Last 30 Days (Daily)
             Order.aggregate([
-                { $match: { tenantId: tId, status: { $ne: 'cancelled' }, createdAt: { $gte: startOf30Days } } },
+                { $match: { ...tenantMatch, createdAt: { $gte: startOf30Days } } },
                 {
                     $group: {
                         _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-                        revenue: { $sum: '$total' },
+                        revenue: revenueSumExpr,
                         orders: { $sum: 1 }
                     }
                 },
@@ -994,11 +1022,11 @@ router.get('/:id/explore-analytics', [auth, checkRole(['super_admin'])], async (
 
             // 6. Past 12 Months / Yearly Breakdown
             Order.aggregate([
-                { $match: { tenantId: tId, status: { $ne: 'cancelled' }, createdAt: { $gte: startOfYear } } },
+                { $match: { ...tenantMatch, createdAt: { $gte: startOfYear } } },
                 {
                     $group: {
                         _id: { $dateToString: { format: '%Y-%m', date: '$createdAt' } },
-                        revenue: { $sum: '$total' },
+                        revenue: revenueSumExpr,
                         orders: { $sum: 1 }
                     }
                 },
@@ -1007,19 +1035,19 @@ router.get('/:id/explore-analytics', [auth, checkRole(['super_admin'])], async (
 
             // 7. Order Status Distribution
             Order.aggregate([
-                { $match: { tenantId: tId } },
+                { $match: { tenantId: { $in: [tId, String(tenantId)] } } },
                 { $group: { _id: '$status', count: { $sum: 1 } } }
             ]),
 
             // 8. Payment Method Distribution
             Order.aggregate([
-                { $match: { tenantId: tId, status: { $ne: 'cancelled' } } },
-                { $group: { _id: { $ifNull: ['$paymentMethod', 'UPI'] }, count: { $sum: 1 }, revenue: { $sum: '$total' } } }
+                { $match: tenantMatch },
+                { $group: { _id: { $ifNull: ['$paymentMethod', 'UPI'] }, count: { $sum: 1 }, revenue: revenueSumExpr } }
             ]),
 
             // 9. Top 5 Selling Dishes
             Order.aggregate([
-                { $match: { tenantId: tId, status: { $ne: 'cancelled' } } },
+                { $match: tenantMatch },
                 { $unwind: '$items' },
                 {
                     $group: {
