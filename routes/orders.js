@@ -122,14 +122,30 @@ router.post(
         return str.includes('_') ? str.split('_')[0] : str;
       };
 
+      const isOpenItemCheck = (i) => {
+        const rawId = String(i.id || i.itemId || i.item || i._id || '');
+        return Boolean(
+          i.isOpenItem ||
+          i.isCustom ||
+          i.isOpenMenu ||
+          i.isPosOnly ||
+          rawId.startsWith('open') ||
+          rawId.startsWith('custom') ||
+          !mongoose.Types.ObjectId.isValid(cleanItemId(rawId))
+        );
+      };
+
       const itemIds = items
         .map(i => cleanItemId(i.id || i.itemId || i.item || i._id))
         .filter(id => id && mongoose.Types.ObjectId.isValid(id));
 
-      let dbItems = await MenuItem.find({
-        _id: { $in: itemIds },
-        tenantId: tenantId
-      });
+      let dbItems = [];
+      if (itemIds.length > 0) {
+        dbItems = await MenuItem.find({
+          _id: { $in: itemIds },
+          tenantId: tenantId
+        });
+      }
 
       // Fallback: Match by name if ID was client-generated or changed
       if (dbItems.length === 0) {
@@ -138,19 +154,18 @@ router.post(
             .map(i => (i.name || '').replace(/\s*\([^)]*\)/, '').trim())
             .filter(Boolean);
 
-          dbItems = await MenuItem.find({
-            tenantId: tenantId,
-            $or: [
-              { _id: { $in: itemIds } },
-              { name: { $in: clientNames } }
-            ]
-          });
+          if (clientNames.length > 0) {
+            dbItems = await MenuItem.find({
+              tenantId: tenantId,
+              name: { $in: clientNames }
+            });
+          }
         } catch (e) {
           console.warn('Item fallback matching failed in order creation:', e.message);
         }
       }
 
-      const hasOpenItems = items.some(i => i.isOpenItem || i.isCustom || !cleanItemId(i.id || i.itemId));
+      const hasOpenItems = items.some(isOpenItemCheck) || items.every(i => i.name && (i.price !== undefined && i.price !== null));
       if (dbItems.length === 0 && !hasOpenItems) {
         return res.status(400).json({ error: 'Invalid items or items not found for this tenant' });
       }
