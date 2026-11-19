@@ -77,7 +77,12 @@ app.use(cors({
   exposedHeaders: ['X-Response-Time']
 }));
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({
+  limit: '10mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { maxAge: '1d' }));
 
@@ -88,6 +93,7 @@ app.get('/health', (req, res) => res.status(200).json({ status: 'ok', timestamp:
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/menu', require('./routes/menu'));
 app.use('/api/orders', require('./routes/orders'));
+app.use('/api/payments', require('./routes/payments'));
 app.use('/api/tenants', require('./routes/tenant'));
 app.use('/api/petpooja', require('./routes/petpooja'));
 app.use('/api/ai', require('./routes/ai'));
@@ -104,11 +110,18 @@ app.use('/api/analytics', require('./routes/analytics'));
 
 // Serve Frontend static build on the same port (unified single-port fullstack)
 const clientBuildPath = path.join(__dirname, '../Cafe-Application-FE/build');
+const clientIndexPath = path.join(clientBuildPath, 'index.html');
 if (fs.existsSync(clientBuildPath)) {
   app.use(express.static(clientBuildPath));
   app.use((req, res, next) => {
     if (req.method === 'GET' && !req.path.startsWith('/api') && !req.path.startsWith('/uploads') && !req.path.startsWith('/health')) {
-      return res.sendFile(path.join(clientBuildPath, 'index.html'));
+      if (fs.existsSync(clientIndexPath)) {
+        return res.sendFile(clientIndexPath, (err) => {
+          if (err && !res.headersSent) {
+            next();
+          }
+        });
+      }
     }
     next();
   });
