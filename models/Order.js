@@ -106,6 +106,30 @@ const orderSchema = new mongoose.Schema({
   // Estimated prep time
   estimatedTime: { type: Number }, // Minutes
 
+  // Razorpay Route Payment Details
+  razorpay: {
+    orderId: { type: String, sparse: true, index: true },
+    paymentId: { type: String, sparse: true, index: true },
+    signature: { type: String },
+    transferId: { type: String, sparse: true },
+    status: {
+      type: String,
+      enum: ['created', 'authorized', 'captured', 'failed', 'refunded'],
+      default: 'created'
+    },
+    amount: { type: Number },
+    currency: { type: String, default: 'INR' },
+    platformCommissionPercent: { type: Number, default: 0 },
+    platformFee: { type: Number, default: 0 },
+    vendorAmount: { type: Number, default: 0 },
+    vendorAccountId: { type: String },
+    capturedAt: { type: Date },
+    refundId: { type: String },
+    refundAmount: { type: Number },
+    refundStatus: { type: String },
+    errorDescription: { type: String }
+  },
+
   createdAt: { type: Date, default: Date.now }
 });
 

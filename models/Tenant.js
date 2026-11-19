@@ -59,12 +59,34 @@ const tenantSchema = new mongoose.Schema({
     enableNightMenu: { type: Boolean, default: false }, // Special Open/Night Menu (POS Only)
     nightMenuStart: { type: String, default: '22:00' }, // Night menu start time e.g. 10:00 PM
     nightMenuEnd: { type: String, default: '05:00' }, // Night menu end time e.g. 05:00 AM
+    upiId: { type: String, trim: true }, // Cafe Owner's direct UPI ID (e.g. cafe@okaxis, 9351862675@paytm)
+    upiPayeeName: { type: String, trim: true }, // Display name for UPI (e.g. Cafee Delight)
+    enableDirectUpi: { type: Boolean, default: true }, // Instant Direct UPI Payments
     categories: {
       type: [{ name: String, id: String, icon: String }],
       default: [
         { id: "all", name: "All", icon: "UtensilsCrossed" }
       ]
     }
+  },
+  razorpay: {
+    accountId: { type: String, trim: true, sparse: true },
+    accountStatus: {
+      type: String,
+      enum: ['unlinked', 'created', 'activated', 'under_review', 'suspended', 'rejected'],
+      default: 'unlinked'
+    },
+    businessName: { type: String, trim: true },
+    legalName: { type: String, trim: true },
+    email: { type: String, trim: true },
+    phone: { type: String, trim: true },
+    accountType: { type: String, default: 'standard' },
+    bankAccountNumber: { type: String, trim: true },
+    bankIfsc: { type: String, trim: true },
+    commissionPercent: { type: Number, default: 0 },
+    isLive: { type: Boolean, default: false },
+    linkedAt: { type: Date },
+    rawAccountDetails: { type: mongoose.Schema.Types.Mixed }
   },
   analytics: {
     historicalRevenue: { type: Number, default: 0 },

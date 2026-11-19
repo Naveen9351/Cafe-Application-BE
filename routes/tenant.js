@@ -133,7 +133,7 @@ router.post('/onboard', [auth, checkRole(['super_admin'])], async (req, res) => 
 // Get Public Tenant Info (For Branding: Name, Logo, Address)
 router.get('/public/:id', async (req, res) => {
     try {
-        const tenant = await Tenant.findById(req.params.id).select('name logo address phone email gstNumber operatingMode settings subscription subscriptionHistory');
+        const tenant = await Tenant.findById(req.params.id).select('name logo address phone email gstNumber operatingMode settings subscription subscriptionHistory razorpay.accountId razorpay.accountStatus');
         if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
         res.json(tenant);
     } catch (err) {
@@ -244,11 +244,32 @@ router.put('/:id', auth, async (req, res) => {
             tenant.settings.nightMenuEnd = String(req.body.settings.nightMenuEnd);
         }
 
+        if (req.body.upiId !== undefined) {
+            tenant.settings.upiId = String(req.body.upiId).trim();
+        } else if (req.body.settings?.upiId !== undefined) {
+            tenant.settings.upiId = String(req.body.settings.upiId).trim();
+        }
+        if (req.body.upiPayeeName !== undefined) {
+            tenant.settings.upiPayeeName = String(req.body.upiPayeeName).trim();
+        } else if (req.body.settings?.upiPayeeName !== undefined) {
+            tenant.settings.upiPayeeName = String(req.body.settings.upiPayeeName).trim();
+        }
+        if (req.body.enableDirectUpi !== undefined) {
+            tenant.settings.enableDirectUpi = Boolean(req.body.enableDirectUpi);
+        } else if (req.body.settings?.enableDirectUpi !== undefined) {
+            tenant.settings.enableDirectUpi = Boolean(req.body.settings.enableDirectUpi);
+        }
+
         // Support direct categories update through PUT /:id
         if (req.body.categories && Array.isArray(req.body.categories)) {
             tenant.settings.categories = req.body.categories;
         } else if (req.body.settings?.categories && Array.isArray(req.body.settings.categories)) {
             tenant.settings.categories = req.body.settings.categories;
+        }
+
+        if (req.body.razorpay) {
+            tenant.razorpay = { ...(tenant.razorpay?.toObject ? tenant.razorpay.toObject() : tenant.razorpay), ...req.body.razorpay };
+            tenant.markModified('razorpay');
         }
 
         tenant.markModified('settings');
