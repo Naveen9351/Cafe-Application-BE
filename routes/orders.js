@@ -1488,6 +1488,9 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
       let combinedTax = Number(primaryOrder.taxAmount) || 0;
       let combinedDiscount = Number(primaryOrder.discountAmount) || 0;
 
+      // Collect all items across all rounds
+      const rawAllItems = [...(primaryOrder.items || [])];
+
       for (let i = 1; i < activeOrders.length; i++) {
         const childOrd = activeOrders[i];
         combinedSubTotal += (Number(childOrd.subTotal) || 0);
@@ -1496,12 +1499,42 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
         combinedDiscount += (Number(childOrd.discountAmount) || 0);
 
         (childOrd.items || []).forEach(it => {
-          primaryOrder.items.push(it);
+          rawAllItems.push(it);
         });
 
         await Order.deleteOne({ _id: childOrd._id });
       }
 
+      // Merge and consolidate identical items (same item name, same price, same variant)
+      const consolidatedItems = [];
+      rawAllItems.forEach(it => {
+        const itName = String(it.name || it.item?.name || '').trim().toLowerCase();
+        const itPrice = Number(it.price || it.item?.price || 0);
+        const itVariant = it.variant?.name ? String(it.variant.name).trim().toLowerCase() : '';
+
+        const existing = consolidatedItems.find(c => {
+          const cName = String(c.name || c.item?.name || '').trim().toLowerCase();
+          const cPrice = Number(c.price || c.item?.price || 0);
+          const cVariant = c.variant?.name ? String(c.variant.name).trim().toLowerCase() : '';
+          return cName === itName && cPrice === itPrice && cVariant === itVariant;
+        });
+
+        if (existing) {
+          existing.quantity = (Number(existing.quantity) || 0) + (Number(it.quantity) || 1);
+          existing.isPaid = true;
+          existing.itemStatus = 'served';
+          if (it.notes && !existing.notes) existing.notes = it.notes;
+          if (it.specialNotes && !existing.specialNotes) existing.specialNotes = it.specialNotes;
+        } else {
+          const copy = typeof it.toObject === 'function' ? it.toObject() : { ...it };
+          copy.quantity = Number(copy.quantity) || 1;
+          copy.isPaid = true;
+          copy.itemStatus = 'served';
+          consolidatedItems.push(copy);
+        }
+      });
+
+      primaryOrder.items = consolidatedItems;
       primaryOrder.subTotal = Math.round(combinedSubTotal * 100) / 100;
       primaryOrder.total = Math.round(combinedTotal * 100) / 100;
       primaryOrder.taxAmount = Math.round(combinedTax * 100) / 100;
