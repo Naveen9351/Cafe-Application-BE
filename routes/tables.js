@@ -21,6 +21,19 @@ router.get('/', async (req, res) => {
     }
 
     const filter = tenantId ? { tenantId } : {};
+
+    // Auto-clear any tables previously marked 'merged' so they appear completely free and ready for new orders
+    if (tenantId) {
+      try {
+        await Table.updateMany(
+          { tenantId, $or: [{ status: 'merged' }, { mergedInto: { $ne: null } }] },
+          { $set: { status: 'available', mergedInto: null, mergedAt: null } }
+        );
+      } catch (cleanErr) {
+        console.warn('Table merge cleanup error:', cleanErr.message);
+      }
+    }
+
     let tables = await Table.find(filter).sort({ createdAt: 1, _id: 1 }).lean();
 
     if (tenantId && tables.length === 0) {
@@ -427,7 +440,7 @@ router.post('/merge', auth, async (req, res) => {
       await primaryDoc.save();
     }
 
-    // 2. Mark the merged tables as status: 'merged', mergedInto: cleanPrimary
+    // 2. Clear and vacate the merged tables so they immediately become free/empty for new guests
     for (const t of cleanMergeList) {
       await Table.updateMany(
         {
@@ -439,9 +452,10 @@ router.post('/merge', auth, async (req, res) => {
         },
         {
           $set: {
-            status: 'merged',
-            mergedInto: cleanPrimary,
-            mergedAt: new Date()
+            status: 'available',
+            mergedInto: null,
+            mergedAt: null,
+            currentOrder: null
           }
         }
       );

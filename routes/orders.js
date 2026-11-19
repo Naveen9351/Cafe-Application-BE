@@ -89,31 +89,9 @@ router.post(
         return res.status(403).json({ error: 'Monthly order limit reached. Upgrade plan.' });
       }
 
-      // 0.8 Check Table Merge: Route order into primary table if source table was merged
       let resolvedTableNumber = tableNumber || 'Counter';
       let originalTableNumber = null;
       let mergedIntoTarget = null;
-
-      if (tableNumber && tableNumber !== 'Takeaway' && tableNumber !== 'Counter' && tableNumber !== 'Walk-in') {
-        try {
-          const Table = require('../models/Table');
-          const cleanT = String(tableNumber).replace(/^Table\s*/i, '').trim();
-          const tblDoc = await Table.findOne({
-            tenantId,
-            $or: [
-              { tableNumber: cleanT },
-              { tableNumber: `Table ${cleanT}` }
-            ]
-          });
-          if (tblDoc && tblDoc.mergedInto) {
-            originalTableNumber = tableNumber;
-            resolvedTableNumber = tblDoc.mergedInto;
-            mergedIntoTarget = tblDoc.mergedInto;
-          }
-        } catch (mErr) {
-          console.warn('Table merge lookup warning:', mErr.message);
-        }
-      }
 
       // 1. Fetch all items (Security: Verify prices server-side)
       const cleanItemId = (raw) => {
