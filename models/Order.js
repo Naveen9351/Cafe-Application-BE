@@ -56,6 +56,7 @@ const orderSchema = new mongoose.Schema({
   subTotal: { type: Number, required: true },
   taxAmount: { type: Number, default: 0 },
   total: { type: Number, required: true },
+  totalAmount: { type: Number },
   discountAmount: { type: Number, default: 0 },
   discountReason: { type: String, default: '' },
   settledAmount: { type: Number },
@@ -137,5 +138,15 @@ const orderSchema = new mongoose.Schema({
 orderSchema.index({ tenantId: 1, createdAt: -1 });
 orderSchema.index({ tenantId: 1, status: 1, createdAt: -1 });
 orderSchema.index({ tenantId: 1, tableNumber: 1, status: 1 });
+
+// Ensure total and totalAmount are always synchronized
+orderSchema.pre('save', function (next) {
+  if (this.total !== undefined && this.total !== null) {
+    this.totalAmount = this.total;
+  } else if (this.totalAmount !== undefined && this.totalAmount !== null) {
+    this.total = this.totalAmount;
+  }
+  next();
+});
 
 module.exports = mongoose.model('Order', orderSchema);

@@ -1822,22 +1822,57 @@ router.put('/:id', auth, async (req, res) => {
       filter.tenantId = req.user.tenantId;
     }
 
-    const order = await Order.findOne(filter);
+    const { items, totalAmount, total, status, notes } = req.body;
+    const updateFields = {};
+
+    if (Array.isArray(items)) {
+      const calculatedSubTotal = items.reduce((sum, it) => sum + ((Number(it.price) || 0) * (Number(it.quantity) || 1)), 0);
+      const roundedSubTotal = Math.round(calculatedSubTotal * 100) / 100;
+      updateFields.items = items;
+      updateFields.subTotal = roundedSubTotal;
+
+      const existingOrder = await Order.findOne(filter).select('taxAmount discountAmount paymentStatus');
+      if (!existingOrder) return res.status(404).json({ error: 'Order not found or unauthorized' });
+
+      const tax = Number(existingOrder.taxAmount) || 0;
+      const discount = Number(existingOrder.discountAmount) || 0;
+      const explicitTotal = typeof total === 'number' && !isNaN(total)
+        ? total
+        : (typeof totalAmount === 'number' && !isNaN(totalAmount) ? totalAmount : null);
+
+      const resolvedTotal = explicitTotal !== null
+        ? Math.round(explicitTotal * 100) / 100
+        : Math.max(0, Math.round((roundedSubTotal + tax - discount) * 100) / 100);
+
+      updateFields.total = resolvedTotal;
+      updateFields.totalAmount = resolvedTotal;
+
+      // Update paidAmount based on items' paid status
+      const allItemsPaid = items.length > 0 && items.every(it => it.isPaid);
+      const calculatedItemPaid = items.reduce((sum, it) => it.isPaid ? sum + (Number(it.price) * (Number(it.quantity) || 1)) : sum, 0);
+
+      if (allItemsPaid) {
+        updateFields.paidAmount = resolvedTotal;
+        updateFields.settledAmount = resolvedTotal;
+        updateFields.paymentStatus = 'paid';
+      } else if (calculatedItemPaid > 0) {
+        updateFields.paidAmount = calculatedItemPaid;
+        updateFields.paymentStatus = 'partial';
+      } else if (existingOrder.paymentStatus !== 'khata') {
+        updateFields.paidAmount = 0;
+        updateFields.paymentStatus = 'pending';
+      }
+    }
+    if (status) updateFields.status = status;
+    if (notes !== undefined) updateFields.notes = notes;
+
+    const order = await Order.findOneAndUpdate(filter, { $set: updateFields }, { new: true });
     if (!order) return res.status(404).json({ error: 'Order not found or unauthorized' });
 
-    const { items, totalAmount, status, notes } = req.body;
-    if (Array.isArray(items)) {
-      order.items = items;
-      const calculatedTotal = items.reduce((sum, it) => sum + ((Number(it.price) || 0) * (Number(it.quantity) || 1)), 0);
-      order.totalAmount = typeof totalAmount === 'number' ? totalAmount : calculatedTotal;
-      order.subTotal = calculatedTotal;
-    }
-    if (status) order.status = status;
-    if (notes !== undefined) order.notes = notes;
-
-    await order.save();
+    setImmediate(() => deductStockForOrder(order));
 
     if (global.io && order.tenantId) {
+      global.io.to(order.tenantId.toString()).emit('orderUpdate', order);
       global.io.to(order.tenantId.toString()).emit('orderUpdated', order);
       global.io.to(order.tenantId.toString()).emit('ordersRefresh');
     }
