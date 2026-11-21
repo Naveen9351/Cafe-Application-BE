@@ -44,7 +44,7 @@ const tenantSchema = new mongoose.Schema({
       price: { type: Number },
       startDate: { type: Date },
       endDate: { type: Date },
-      status: { type: String, enum: ['active', 'deactivated', 'expired'] },
+      status: { type: String, default: 'active' },
       actionDate: { type: Date, default: Date.now },
       notes: { type: String }
     }
@@ -57,6 +57,7 @@ const tenantSchema = new mongoose.Schema({
     logo: { type: String }, // URL to logo
     enableEstimatedPrepTime: { type: Boolean, default: false }, // Kitchen prep time estimation toggle (default OFF)
     enableKhata: { type: Boolean, default: false }, // Indian customer credit / borrow (Udhari) toggle (default OFF)
+    enableCustomerOtp: { type: Boolean, default: true }, // SMS OTP & Google Verification for Customer Orders (default ON)
     language: { type: String, default: 'en' }, // 'en' or 'hi'
     enableNightMenu: { type: Boolean, default: false }, // Special Open/Night Menu (POS Only)
     nightMenuStart: { type: String, default: '22:00' }, // Night menu start time e.g. 10:00 PM

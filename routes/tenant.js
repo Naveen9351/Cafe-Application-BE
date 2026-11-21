@@ -192,7 +192,7 @@ router.put('/settings', auth, async (req, res) => {
         if (!tenantId || !mongoose.Types.ObjectId.isValid(tenantId)) {
             return res.status(400).json({ error: 'Invalid or missing tenant ID' });
         }
-        const { categories, theme, logo, currency, taxPercentage } = req.body;
+        const { categories, theme, logo, currency, taxPercentage, enableCustomerOtp } = req.body;
 
         const tenant = await Tenant.findById(tenantId);
         if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
@@ -206,6 +206,7 @@ router.put('/settings', auth, async (req, res) => {
         if (logo) tenant.settings.logo = logo;
         if (currency) tenant.settings.currency = currency;
         if (taxPercentage !== undefined) tenant.settings.taxPercentage = taxPercentage;
+        if (enableCustomerOtp !== undefined) tenant.settings.enableCustomerOtp = Boolean(enableCustomerOtp);
 
         tenant.markModified('settings');
         await tenant.save();
@@ -264,6 +265,11 @@ router.put('/:id', auth, async (req, res) => {
             tenant.settings.enableKhata = Boolean(req.body.enableKhata);
         } else if (req.body.settings?.enableKhata !== undefined) {
             tenant.settings.enableKhata = Boolean(req.body.settings.enableKhata);
+        }
+        if (req.body.enableCustomerOtp !== undefined) {
+            tenant.settings.enableCustomerOtp = Boolean(req.body.enableCustomerOtp);
+        } else if (req.body.settings?.enableCustomerOtp !== undefined) {
+            tenant.settings.enableCustomerOtp = Boolean(req.body.settings.enableCustomerOtp);
         }
         if (req.body.language !== undefined) {
             tenant.settings.language = req.body.language;
@@ -1270,7 +1276,7 @@ router.get('/:id/explore-analytics', [auth, checkRole(['super_admin'])], async (
 // Update Cafe Tenant Details & Owner User Credentials (Super Admin)
 router.put('/:id/account', [auth, checkRole(['super_admin'])], async (req, res) => {
     try {
-        const { cafeName, adminName, email, phone, password, sendEmailNotification, operatingMode, plan, customPrice, customAddons } = req.body;
+        const { cafeName, adminName, email, phone, password, sendEmailNotification, operatingMode, plan, customPrice, customAddons, enableCustomerOtp } = req.body;
         const tenantId = req.params.id;
 
         const tenant = await Tenant.findById(tenantId);
@@ -1333,6 +1339,12 @@ router.put('/:id/account', [auth, checkRole(['super_admin'])], async (req, res) 
             });
         }
 
+        if (enableCustomerOtp !== undefined) {
+            if (!tenant.settings) tenant.settings = {};
+            tenant.settings.enableCustomerOtp = Boolean(enableCustomerOtp);
+            tenant.markModified('settings');
+        }
+
         // Update Subscription Plan if specified
         if (plan) {
             const targetPlan = String(plan).toLowerCase();
@@ -1381,14 +1393,17 @@ router.put('/:id/account', [auth, checkRole(['super_admin'])], async (req, res) 
             if (!tenant.subscriptionHistory) tenant.subscriptionHistory = [];
             tenant.subscriptionHistory.push({
                 plan: planDisplayName,
-                amount: price,
-                date: new Date(),
-                action: 'PLAN_UPDATE',
-                status: 'Success'
+                price: price,
+                startDate: startDate,
+                endDate: endDate,
+                status: 'active',
+                actionDate: new Date(),
+                notes: `Plan updated by Super Admin to ${planDisplayName}`
             });
         }
 
         await tenant.save();
+        invalidateSubscriptionCache(tenant._id);
 
         // Update or Create Admin User
         let plainPasswordForEmail = null;
