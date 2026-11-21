@@ -5,6 +5,11 @@ const KhataRecord = require('../models/KhataRecord');
 const Order = require('../models/Order');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
+const checkModuleAccess = require('../middleware/checkModuleAccess');
+const { MODULE_KEYS } = require('../config/subscriptionPlans');
+
+// Guard all Khata routes with module access check
+router.use([auth, checkModuleAccess(MODULE_KEYS.KHATA_LEDGER)]);
 
 /**
  * Helper to ensure tenantId is resolved

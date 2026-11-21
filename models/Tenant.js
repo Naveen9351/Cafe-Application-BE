@@ -17,7 +17,7 @@ const tenantSchema = new mongoose.Schema({
   subscription: {
     plan: {
       type: String,
-      default: '1_month'
+      default: 'pro'
     },
     price: { type: Number, default: 999 },
     startDate: { type: Date, default: Date.now },
@@ -28,6 +28,8 @@ const tenantSchema = new mongoose.Schema({
     deactivatedAt: { type: Date },
     orderLimit: { type: Number, default: 999999 },
     orderCount: { type: Number, default: 0 },
+    modules: [{ type: String }],
+    customAddons: [{ type: String }],
     features: {
       emailSupport: { type: Boolean, default: true },
       prioritySupport: { type: Boolean, default: true },

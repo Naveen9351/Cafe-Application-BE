@@ -6,6 +6,8 @@ const sharp = require('sharp');
 const Tesseract = require('tesseract.js');
 const cloudinary = require('cloudinary').v2;
 const auth = require('../middleware/auth');
+const checkModuleAccess = require('../middleware/checkModuleAccess');
+const { MODULE_KEYS } = require('../config/subscriptionPlans');
 const Order = require('../models/Order');
 const Inventory = require('../models/Inventory');
 const MenuItem = require('../models/MenuItem');
@@ -408,7 +410,7 @@ const queryGemini = async (prompt, systemInstruction = "") => {
 };
 
 // ── 1. INTERNAL AI RESTAURANT ASSISTANT (TENANT-SPECIFIC LIVE DATA) ──
-router.post('/copilot', auth, async (req, res) => {
+router.post('/copilot', [auth, checkModuleAccess(MODULE_KEYS.AI_COPILOT)], async (req, res) => {
   const { query, conversationHistory = [] } = req.body;
   const mongoose = require('mongoose');
   
@@ -667,7 +669,7 @@ How can I assist you?
 });
 
 // ── 1B. EXECUTIVE AI REPORT INSIGHTS (POWERED BY SARVAM LLM) ──
-router.post('/report-insights', auth, async (req, res) => {
+router.post('/report-insights', [auth, checkModuleAccess(MODULE_KEYS.AI_COPILOT)], async (req, res) => {
   const tenantId = req.tenantId || req.user?.tenantId;
   const { timeFilter = 'all' } = req.body;
 

@@ -3,6 +3,11 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const auth = require('../middleware/auth');
+const checkModuleAccess = require('../middleware/checkModuleAccess');
+const { MODULE_KEYS } = require('../config/subscriptionPlans');
+
+// Guard all Staff management routes with module access check
+router.use([auth, checkModuleAccess(MODULE_KEYS.STAFF_MANAGEMENT)]);
 
 /**
  * Helper to normalize role to valid User schema enum

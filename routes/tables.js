@@ -5,6 +5,8 @@ const Table = require('../models/Table');
 const Order = require('../models/Order');
 const auth = require('../middleware/auth');
 const checkRole = require('../middleware/checkRole');
+const checkModuleAccess = require('../middleware/checkModuleAccess');
+const { MODULE_KEYS } = require('../config/subscriptionPlans');
 
 const jwt = require('jsonwebtoken');
 
@@ -58,7 +60,7 @@ router.get('/', async (req, res) => {
 });
 
 // POST /api/tables/temp - Create a Temporary Table / Open Tab for walk-in or floating guests
-router.post('/temp', auth, async (req, res) => {
+router.post('/temp', [auth, checkModuleAccess([MODULE_KEYS.TEMPORARY_TABLES, MODULE_KEYS.TABLE_QR])], async (req, res) => {
   try {
     const tenantId = req.user.tenantId || req.tenantId;
     const { customerName, customerPhone, notes, seatingCapacity } = req.body;
@@ -110,7 +112,7 @@ router.post('/temp', auth, async (req, res) => {
 });
 
 // POST /api/tables - Create a new table for the tenant
-router.post('/', [auth, checkRole(['admin', 'super_admin'])], async (req, res) => {
+router.post('/', [auth, checkRole(['admin', 'super_admin']), checkModuleAccess([MODULE_KEYS.TABLE_QR, MODULE_KEYS.FLOOR_LAYOUT])], async (req, res) => {
   try {
     const tenantId = req.user.tenantId || req.tenantId;
     const { tableNumber, seatingCapacity, status, section } = req.body;
@@ -151,7 +153,7 @@ router.post('/', [auth, checkRole(['admin', 'super_admin'])], async (req, res) =
 });
 
 // PUT /api/tables/:id - Update table
-router.put('/:id', [auth, checkRole(['admin', 'super_admin'])], async (req, res) => {
+router.put('/:id', [auth, checkRole(['admin', 'super_admin']), checkModuleAccess([MODULE_KEYS.TABLE_QR, MODULE_KEYS.FLOOR_LAYOUT])], async (req, res) => {
   try {
     const tenantId = req.user.tenantId || req.tenantId;
     const { tableNumber, seatingCapacity, status, section } = req.body;
@@ -409,7 +411,7 @@ router.put('/service-requests/:id', async (req, res) => {
 });
 
 // POST /api/tables/merge - Merge one or more tables into a primary table
-router.post('/merge', auth, async (req, res) => {
+router.post('/merge', [auth, checkModuleAccess([MODULE_KEYS.TABLE_QR, MODULE_KEYS.FLOOR_LAYOUT])], async (req, res) => {
   try {
     const tenantId = req.user.tenantId || req.tenantId;
     const { primaryTable, tablesToMerge } = req.body;
@@ -498,7 +500,7 @@ router.post('/merge', auth, async (req, res) => {
 });
 
 // POST /api/tables/move - Move all orders from sourceTable to empty targetTable
-router.post('/move', auth, async (req, res) => {
+router.post('/move', [auth, checkModuleAccess([MODULE_KEYS.TABLE_QR, MODULE_KEYS.FLOOR_LAYOUT])], async (req, res) => {
   try {
     const tenantId = req.user.tenantId || req.tenantId;
     const { sourceTable, targetTable } = req.body;
@@ -602,7 +604,7 @@ router.post('/move', auth, async (req, res) => {
 });
 
 // POST /api/tables/demerge - Demerge a table from its primary table
-router.post('/demerge', auth, async (req, res) => {
+router.post('/demerge', [auth, checkModuleAccess([MODULE_KEYS.TABLE_QR, MODULE_KEYS.FLOOR_LAYOUT])], async (req, res) => {
   try {
     const tenantId = req.user.tenantId || req.tenantId;
     const { primaryTable, tableToDemerge } = req.body;

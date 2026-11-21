@@ -12,6 +12,12 @@ const User = require('../models/User');
 const Order = require('../models/Order');
 const OnboardingRequest = require('../models/OnboardingRequest');
 const emailService = require('../utils/emailService');
+const {
+    PLAN_TIERS,
+    CUSTOM_ADDONS,
+    getEffectiveTenantModules,
+    calculateCustomPlanPrice
+} = require('../config/subscriptionPlans');
 
 // Get all tenants (Super Admin only) - enriched with admin user info
 router.get('/', [auth, checkRole(['super_admin'])], async (req, res) => {
@@ -22,8 +28,13 @@ router.get('/', [auth, checkRole(['super_admin'])], async (req, res) => {
             if (!adminUser) {
                 adminUser = await User.findOne({ tenantId: t._id, role: 'admin' }).select('name email phone role').lean();
             }
+            const effectiveModules = getEffectiveTenantModules(t.subscription);
             return {
                 ...t,
+                subscription: {
+                    ...(t.subscription || {}),
+                    effectiveModules
+                },
                 adminName: adminUser?.name || 'Admin',
                 ownerName: adminUser?.name || 'Admin',
                 adminEmail: adminUser?.email || t.email,
@@ -41,7 +52,7 @@ router.get('/', [auth, checkRole(['super_admin'])], async (req, res) => {
 // Onboard New Cafe (Super Admin only)
 router.post('/onboard', [auth, checkRole(['super_admin'])], async (req, res) => {
     try {
-        const { businessName, adminName, email, password, phone, address, logo, profileImage, plan, customPrice, operatingMode } = req.body;
+        const { businessName, adminName, email, password, phone, address, logo, profileImage, plan, customPrice, customAddons, operatingMode } = req.body;
 
         if (!businessName || !email || !password) {
             return res.status(400).json({ error: 'Business name, email, and password are required' });
@@ -56,21 +67,55 @@ router.post('/onboard', [auth, checkRole(['super_admin'])], async (req, res) => 
             return res.status(400).json({ error: 'User with this email already exists' });
         }
 
-        const plans = {
-            '1_month': { name: '1 Month Starter', price: 999, duration: 30 },
-            '6_months': { name: '6 Months Saver', price: 4999, duration: 180 },
-            '1_year': { name: '1 Year Ultimate Pro', price: 10999, duration: 365 },
-            'free_trial': { name: 'Free Trial', price: 0, duration: 14 }
-        };
+        const targetPlan = (plan || 'starter').toLowerCase();
+        let planDurationDays = 30;
+        let planDefaultPrice = 499;
+        let planDisplayName = 'Starter Plan (₹499)';
 
-        const planConfig = plans[plan] || plans['1_month'];
-        const price = customPrice !== undefined ? Number(customPrice) : planConfig.price;
+        if (PLAN_TIERS[targetPlan]) {
+            planDurationDays = PLAN_TIERS[targetPlan].durationDays || 30;
+            planDefaultPrice = PLAN_TIERS[targetPlan].price !== undefined ? PLAN_TIERS[targetPlan].price : 499;
+            planDisplayName = PLAN_TIERS[targetPlan].name;
+        } else if (targetPlan === '1_month') {
+            planDurationDays = 30;
+            planDefaultPrice = 999;
+            planDisplayName = '1 Month Starter';
+        } else if (targetPlan === '6_months') {
+            planDurationDays = 180;
+            planDefaultPrice = 4999;
+            planDisplayName = '6 Months Saver';
+        } else if (targetPlan === '1_year') {
+            planDurationDays = 365;
+            planDefaultPrice = 10999;
+            planDisplayName = '1 Year Ultimate Pro';
+        }
+
+        let calculatedPrice = planDefaultPrice;
+        const normalizedAddons = Array.isArray(customAddons) ? customAddons : [];
+        if (targetPlan === 'custom') {
+            calculatedPrice = calculateCustomPlanPrice(normalizedAddons);
+            planDisplayName = `Custom Plan (₹${calculatedPrice})`;
+        }
+
+        const price = customPrice !== undefined && customPrice !== null && customPrice !== '' ? Number(customPrice) : calculatedPrice;
 
         const startDate = new Date();
         const endDate = new Date();
-        endDate.setDate(endDate.getDate() + planConfig.duration);
+        endDate.setDate(endDate.getDate() + planDurationDays);
 
         const targetOperatingMode = operatingMode === 'counter_billing' ? 'counter_billing' : 'dine_in';
+
+        const subConfig = {
+            plan: targetPlan,
+            price: price,
+            startDate: startDate,
+            endDate: endDate,
+            isActive: true,
+            orderLimit: 999999,
+            customAddons: normalizedAddons
+        };
+        const initialModules = getEffectiveTenantModules(subConfig);
+        subConfig.modules = initialModules;
 
         // Create Tenant
         const tenant = new Tenant({
@@ -79,23 +124,16 @@ router.post('/onboard', [auth, checkRole(['super_admin'])], async (req, res) => 
             phone: phone || '',
             address: address || '',
             operatingMode: targetOperatingMode,
-            subscription: {
-                plan: plan || '1_month',
-                price: price,
-                startDate: startDate,
-                endDate: endDate,
-                isActive: true,
-                orderLimit: 999999
-            },
+            subscription: subConfig,
             subscriptionHistory: [
                 {
-                    plan: planConfig.name,
+                    plan: planDisplayName,
                     price: price,
                     startDate: startDate,
                     endDate: endDate,
                     status: 'active',
                     actionDate: new Date(),
-                    notes: 'Initial Onboarding Plan'
+                    notes: `Initial Onboarding Plan: ${planDisplayName}`
                 }
             ],
             settings: {
@@ -133,8 +171,12 @@ router.post('/onboard', [auth, checkRole(['super_admin'])], async (req, res) => 
 // Get Public Tenant Info (For Branding: Name, Logo, Address)
 router.get('/public/:id', async (req, res) => {
     try {
-        const tenant = await Tenant.findById(req.params.id).select('name logo address phone email gstNumber operatingMode settings subscription subscriptionHistory razorpay.accountId razorpay.accountStatus');
+        const tenant = await Tenant.findById(req.params.id).select('name logo address phone email gstNumber operatingMode settings subscription subscriptionHistory razorpay.accountId razorpay.accountStatus').lean();
         if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
+        
+        if (tenant.subscription) {
+            tenant.subscription.effectiveModules = getEffectiveTenantModules(tenant.subscription);
+        }
         res.json(tenant);
     } catch (err) {
         console.error("Fetch public tenant error:", err);
@@ -286,9 +328,9 @@ router.put('/:id', auth, async (req, res) => {
 router.post('/upgrade-plan', auth, async (req, res) => {
     try {
         const tenantId = req.user.tenantId;
-        const { planId, plan, paymentMethod, paymentId, amount, transactionRef } = req.body;
+        const { planId, plan, paymentMethod, paymentId, amount, transactionRef, customAddons } = req.body;
 
-        const effectivePlanId = planId || plan;
+        const effectivePlanId = (planId || plan || 'starter').toLowerCase();
 
         // Security check: Must have verified payment reference
         if (!paymentId || !paymentMethod) {
@@ -298,28 +340,46 @@ router.post('/upgrade-plan', auth, async (req, res) => {
         const tenant = await Tenant.findById(tenantId);
         if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
-        const PLANS = {
-            '1_month': { name: '1 Month Starter', price: 999, durationDays: 30, orderLimit: 999999 },
-            '6_months': { name: '6 Months Saver', price: 4999, durationDays: 180, orderLimit: 999999 },
-            '1_year': { name: '1 Year Ultimate Pro', price: 8999, durationDays: 365, orderLimit: 999999 },
-            starter: { name: '1 Month Starter', price: 999, durationDays: 30, orderLimit: 999999 },
-            growth: { name: '6 Months Saver', price: 4999, durationDays: 180, orderLimit: 999999 },
-            enterprise: { name: '1 Year Ultimate Pro', price: 8999, durationDays: 365, orderLimit: 999999 }
-        };
+        const normalizedAddons = Array.isArray(customAddons) ? customAddons : (tenant.subscription?.customAddons || []);
+        let chosenPlanName = 'Starter Plan';
+        let planDurationDays = 30;
+        let planBasePrice = 499;
 
-        const chosenPlan = PLANS[effectivePlanId] || PLANS['1_month'];
-        const actualPrice = amount ? Number(amount) : (req.body.price ? Number(req.body.price) : chosenPlan.price);
+        if (PLAN_TIERS[effectivePlanId]) {
+            chosenPlanName = PLAN_TIERS[effectivePlanId].name;
+            planDurationDays = PLAN_TIERS[effectivePlanId].durationDays || 30;
+            planBasePrice = PLAN_TIERS[effectivePlanId].price !== undefined ? PLAN_TIERS[effectivePlanId].price : 499;
+        } else if (effectivePlanId === '1_month') {
+            chosenPlanName = '1 Month Starter';
+            planBasePrice = 999;
+        } else if (effectivePlanId === '6_months') {
+            chosenPlanName = '6 Months Saver';
+            planDurationDays = 180;
+            planBasePrice = 4999;
+        } else if (effectivePlanId === '1_year') {
+            chosenPlanName = '1 Year Ultimate Pro';
+            planDurationDays = 365;
+            planBasePrice = 8999;
+        }
+
+        if (effectivePlanId === 'custom') {
+            planBasePrice = calculateCustomPlanPrice(normalizedAddons);
+            chosenPlanName = `Custom Plan (₹${planBasePrice})`;
+        }
+
+        const actualPrice = amount ? Number(amount) : (req.body.price ? Number(req.body.price) : planBasePrice);
         const startDate = new Date();
-        const endDate = new Date(Date.now() + chosenPlan.durationDays * 24 * 60 * 60 * 1000);
+        const endDate = new Date(Date.now() + planDurationDays * 24 * 60 * 60 * 1000);
 
-        tenant.subscription = {
-            plan: chosenPlan.name,
+        const subObj = {
+            plan: effectivePlanId,
             price: actualPrice,
             startDate,
             endDate,
             isActive: true,
-            orderLimit: chosenPlan.orderLimit,
+            orderLimit: 999999,
             orderCount: tenant.subscription?.orderCount || 0,
+            customAddons: normalizedAddons,
             features: {
                 emailSupport: true,
                 prioritySupport: true,
@@ -328,10 +388,12 @@ router.post('/upgrade-plan', auth, async (req, res) => {
                 advancedAnalytics: true
             }
         };
+        subObj.modules = getEffectiveTenantModules(subObj);
+        tenant.subscription = subObj;
 
         if (!tenant.subscriptionHistory) tenant.subscriptionHistory = [];
         tenant.subscriptionHistory.push({
-            plan: chosenPlan.name,
+            plan: chosenPlanName,
             price: actualPrice,
             startDate,
             endDate,
@@ -344,9 +406,15 @@ router.post('/upgrade-plan', auth, async (req, res) => {
         invalidateSubscriptionCache(tenant._id);
         res.json({ 
             success: true, 
-            message: `Payment of ₹${actualPrice} verified! Successfully activated ${chosenPlan.name}!`, 
+            message: `Payment of ₹${actualPrice} verified! Successfully activated ${chosenPlanName}!`, 
             paymentId,
-            tenant 
+            tenant: {
+                ...tenant.toObject(),
+                subscription: {
+                    ...tenant.subscription.toObject(),
+                    effectiveModules: subObj.modules
+                }
+            }
         });
     } catch (err) {
         console.error("In-app plan upgrade error:", err);
@@ -357,20 +425,42 @@ router.post('/upgrade-plan', auth, async (req, res) => {
 // Update / Activate Tenant Subscription Plan (Super Admin)
 router.put('/:id/subscription', [auth, checkRole(['super_admin'])], async (req, res) => {
     try {
-        const { plan, customPrice, customEndDate, operatingMode } = req.body; 
+        const { plan, customPrice, customEndDate, customAddons, operatingMode } = req.body; 
 
         const tenant = await Tenant.findById(req.params.id);
         if (!tenant) return res.status(404).json({ error: 'Tenant not found' });
 
-        const plans = {
-            '1_month': { name: '1 Month Starter', price: 999, duration: 30 },
-            '6_months': { name: '6 Months Saver', price: 4999, duration: 180 },
-            '1_year': { name: '1 Year Ultimate Pro', price: 10999, duration: 365 },
-            'free_trial': { name: 'Free Trial', price: 0, duration: 14 }
-        };
+        const targetPlan = (plan || 'starter').toLowerCase();
+        let planDurationDays = 30;
+        let planDefaultPrice = 499;
+        let planDisplayName = 'Starter Plan (₹499)';
 
-        const planConfig = plans[plan] || { name: plan || 'Custom Plan', price: customPrice || 999, duration: 30 };
-        const price = customPrice !== undefined ? Number(customPrice) : planConfig.price;
+        if (PLAN_TIERS[targetPlan]) {
+            planDurationDays = PLAN_TIERS[targetPlan].durationDays || 30;
+            planDefaultPrice = PLAN_TIERS[targetPlan].price !== undefined ? PLAN_TIERS[targetPlan].price : 499;
+            planDisplayName = PLAN_TIERS[targetPlan].name;
+        } else if (targetPlan === '1_month') {
+            planDurationDays = 30;
+            planDefaultPrice = 999;
+            planDisplayName = '1 Month Starter';
+        } else if (targetPlan === '6_months') {
+            planDurationDays = 180;
+            planDefaultPrice = 4999;
+            planDisplayName = '6 Months Saver';
+        } else if (targetPlan === '1_year') {
+            planDurationDays = 365;
+            planDefaultPrice = 10999;
+            planDisplayName = '1 Year Ultimate Pro';
+        }
+
+        const normalizedAddons = Array.isArray(customAddons) ? customAddons : (tenant.subscription?.customAddons || []);
+        let calculatedPrice = planDefaultPrice;
+        if (targetPlan === 'custom') {
+            calculatedPrice = calculateCustomPlanPrice(normalizedAddons);
+            planDisplayName = `Custom Plan (₹${calculatedPrice})`;
+        }
+
+        const price = customPrice !== undefined && customPrice !== null && customPrice !== '' ? Number(customPrice) : calculatedPrice;
 
         const startDate = new Date();
         let endDate;
@@ -378,17 +468,18 @@ router.put('/:id/subscription', [auth, checkRole(['super_admin'])], async (req, 
             endDate = new Date(customEndDate);
         } else {
             endDate = new Date();
-            endDate.setDate(endDate.getDate() + planConfig.duration);
+            endDate.setDate(endDate.getDate() + planDurationDays);
         }
 
-        tenant.subscription = {
-            plan: plan || '1_month',
+        const subObj = {
+            plan: targetPlan,
             price: price,
             startDate: startDate,
             endDate: endDate,
             isActive: true,
             orderLimit: 999999,
             orderCount: tenant.subscription?.orderCount || 0,
+            customAddons: normalizedAddons,
             features: {
                 emailSupport: true,
                 prioritySupport: true,
@@ -397,6 +488,8 @@ router.put('/:id/subscription', [auth, checkRole(['super_admin'])], async (req, 
                 advancedAnalytics: true
             }
         };
+        subObj.modules = getEffectiveTenantModules(subObj);
+        tenant.subscription = subObj;
 
         if (operatingMode) {
             const targetMode = operatingMode === 'counter_billing' ? 'counter_billing' : 'dine_in';
@@ -414,7 +507,7 @@ router.put('/:id/subscription', [auth, checkRole(['super_admin'])], async (req, 
 
         if (!tenant.subscriptionHistory) tenant.subscriptionHistory = [];
         tenant.subscriptionHistory.push({
-            plan: planConfig.name || plan,
+            plan: planDisplayName,
             price: price,
             startDate: startDate,
             endDate: endDate,
@@ -425,7 +518,9 @@ router.put('/:id/subscription', [auth, checkRole(['super_admin'])], async (req, 
 
         await tenant.save();
         invalidateSubscriptionCache(tenant._id);
-        res.json(tenant);
+        const enrichedTenant = tenant.toObject();
+        enrichedTenant.subscription.effectiveModules = subObj.modules;
+        res.json(enrichedTenant);
     } catch (err) {
         console.error("Subscription update error:", err);
         res.status(500).json({ error: "Subscription update failed" });
@@ -1175,7 +1270,7 @@ router.get('/:id/explore-analytics', [auth, checkRole(['super_admin'])], async (
 // Update Cafe Tenant Details & Owner User Credentials (Super Admin)
 router.put('/:id/account', [auth, checkRole(['super_admin'])], async (req, res) => {
     try {
-        const { cafeName, adminName, email, phone, password, sendEmailNotification, operatingMode } = req.body;
+        const { cafeName, adminName, email, phone, password, sendEmailNotification, operatingMode, plan, customPrice, customAddons } = req.body;
         const tenantId = req.params.id;
 
         const tenant = await Tenant.findById(tenantId);
@@ -1237,6 +1332,62 @@ router.put('/:id/account', [auth, checkRole(['super_admin'])], async (req, res) 
                 }
             });
         }
+
+        // Update Subscription Plan if specified
+        if (plan) {
+            const targetPlan = String(plan).toLowerCase();
+            let planDurationDays = 30;
+            let planDefaultPrice = 499;
+            let planDisplayName = 'Starter Plan (₹499)';
+
+            if (PLAN_TIERS[targetPlan]) {
+                planDurationDays = PLAN_TIERS[targetPlan].durationDays || 30;
+                planDefaultPrice = PLAN_TIERS[targetPlan].price !== undefined ? PLAN_TIERS[targetPlan].price : 499;
+                planDisplayName = PLAN_TIERS[targetPlan].name;
+            }
+
+            const normalizedAddons = Array.isArray(customAddons) ? customAddons : (tenant.subscription?.customAddons || []);
+            let calculatedPrice = planDefaultPrice;
+            if (targetPlan === 'custom') {
+                calculatedPrice = calculateCustomPlanPrice(normalizedAddons);
+                planDisplayName = `Custom Plan (₹${calculatedPrice})`;
+            }
+
+            const price = customPrice !== undefined && customPrice !== null && customPrice !== '' ? Number(customPrice) : calculatedPrice;
+            const startDate = new Date();
+            const endDate = new Date();
+            endDate.setDate(endDate.getDate() + planDurationDays);
+
+            const subObj = {
+                plan: targetPlan,
+                price: price,
+                startDate: startDate,
+                endDate: endDate,
+                isActive: true,
+                orderLimit: 999999,
+                orderCount: tenant.subscription?.orderCount || 0,
+                customAddons: normalizedAddons,
+                features: {
+                    emailSupport: true,
+                    prioritySupport: true,
+                    customBranding: true,
+                    orderTimer: true,
+                    advancedAnalytics: true
+                }
+            };
+            subObj.modules = getEffectiveTenantModules(subObj);
+            tenant.subscription = subObj;
+
+            if (!tenant.subscriptionHistory) tenant.subscriptionHistory = [];
+            tenant.subscriptionHistory.push({
+                plan: planDisplayName,
+                amount: price,
+                date: new Date(),
+                action: 'PLAN_UPDATE',
+                status: 'Success'
+            });
+        }
+
         await tenant.save();
 
         // Update or Create Admin User

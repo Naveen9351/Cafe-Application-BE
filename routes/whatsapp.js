@@ -2,6 +2,11 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const auth = require('../middleware/auth');
+const checkModuleAccess = require('../middleware/checkModuleAccess');
+const { MODULE_KEYS } = require('../config/subscriptionPlans');
+
+// Guard all WhatsApp routes with module access check
+router.use([auth, checkModuleAccess(MODULE_KEYS.WHATSAPP_SUITE)]);
 const Order = require('../models/Order');
 const Tenant = require('../models/Tenant');
 const {
