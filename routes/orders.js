@@ -496,9 +496,10 @@ router.get('/active-session', async (req, res) => {
 
     const sessionOrders = await Order.find(sessionFilter).sort({ createdAt: 1 }).lean();
 
-    activeOrder.sessionOrders = sessionOrders.length > 0 ? sessionOrders : [activeOrder];
+    const responseOrder = { ...activeOrder };
+    responseOrder.sessionOrders = sessionOrders.length > 0 ? sessionOrders : [{ ...activeOrder }];
 
-    res.json(activeOrder);
+    res.json(responseOrder);
   } catch (err) {
     console.error('Get active session order error:', err);
     res.status(500).json({ error: 'Server error' });
