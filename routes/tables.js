@@ -497,6 +497,110 @@ router.post('/merge', auth, async (req, res) => {
   }
 });
 
+// POST /api/tables/move - Move all orders from sourceTable to empty targetTable
+router.post('/move', auth, async (req, res) => {
+  try {
+    const tenantId = req.user.tenantId || req.tenantId;
+    const { sourceTable, targetTable } = req.body;
+
+    if (!tenantId) {
+      return res.status(400).json({ error: 'Tenant ID is required' });
+    }
+    if (!sourceTable || !targetTable) {
+      return res.status(400).json({ error: 'sourceTable and targetTable are required' });
+    }
+
+    const cleanSource = String(sourceTable).replace(/^Table\s*/i, '').trim();
+    const cleanTarget = String(targetTable).replace(/^Table\s*/i, '').trim();
+
+    if (cleanSource.toLowerCase() === cleanTarget.toLowerCase()) {
+      return res.status(400).json({ error: 'Source and target table cannot be the same' });
+    }
+
+    // 1. Find all active orders for the source table
+    const activeOrders = await Order.find({
+      tenantId,
+      status: { $nin: ['completed', 'cancelled'] },
+      $or: [
+        { tableNumber: cleanSource },
+        { tableNumber: `Table ${cleanSource}` }
+      ]
+    });
+
+    if (activeOrders.length === 0) {
+      return res.status(400).json({ error: `Table ${cleanSource} has no active orders to move` });
+    }
+
+    for (const ord of activeOrders) {
+      if (!ord.originalTable) {
+        ord.originalTable = ord.tableNumber;
+      }
+      ord.tableNumber = cleanTarget;
+      if (ord.mergedInto && ord.mergedInto.toLowerCase() === cleanSource.toLowerCase()) {
+        ord.mergedInto = cleanTarget;
+      }
+      await ord.save();
+    }
+
+    // 2. Clear source table and reset its status to available
+    await Table.updateMany(
+      {
+        tenantId,
+        $or: [
+          { tableNumber: cleanSource },
+          { tableNumber: `Table ${cleanSource}` }
+        ]
+      },
+      {
+        $set: {
+          status: 'available',
+          mergedInto: null,
+          mergedAt: null,
+          currentOrder: null
+        },
+        $pull: { mergedWith: { $exists: true } }
+      }
+    );
+
+    // 3. Mark target table as occupied
+    await Table.updateMany(
+      {
+        tenantId,
+        $or: [
+          { tableNumber: cleanTarget },
+          { tableNumber: `Table ${cleanTarget}` }
+        ]
+      },
+      {
+        $set: {
+          status: 'occupied',
+          mergedInto: null,
+          mergedAt: null
+        }
+      }
+    );
+
+    if (global.io) {
+      global.io.to(tenantId.toString()).emit('tablesUpdated', {
+        action: 'moved',
+        sourceTable: cleanSource,
+        targetTable: cleanTarget
+      });
+      global.io.to(tenantId.toString()).emit('ordersRefresh');
+    }
+
+    res.json({
+      success: true,
+      message: `Table ${cleanSource} successfully moved to Table ${cleanTarget}`,
+      sourceTable: cleanSource,
+      targetTable: cleanTarget
+    });
+  } catch (err) {
+    console.error('Table move error:', err);
+    res.status(500).json({ error: 'Failed to move table: ' + err.message });
+  }
+});
+
 // POST /api/tables/demerge - Demerge a table from its primary table
 router.post('/demerge', auth, async (req, res) => {
   try {
@@ -556,6 +660,29 @@ router.post('/demerge', auth, async (req, res) => {
           }
         }
       );
+
+      // Check if there are active orders for cleanDemerge, if so, mark occupied
+      const activeCount = await Order.countDocuments({
+        tenantId,
+        status: { $nin: ['completed', 'cancelled'] },
+        $or: [
+          { tableNumber: cleanDemerge },
+          { tableNumber: `Table ${cleanDemerge}` }
+        ]
+      });
+
+      if (activeCount > 0) {
+        await Table.updateMany(
+          {
+            tenantId,
+            $or: [
+              { tableNumber: cleanDemerge },
+              { tableNumber: `Table ${cleanDemerge}` }
+            ]
+          },
+          { $set: { status: 'occupied' } }
+        );
+      }
     }
 
     if (global.io) {

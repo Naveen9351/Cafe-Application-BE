@@ -399,10 +399,7 @@ router.post(
 // GET Active Order for Table/Phone (Public - for Customer Menu Dashboard)
 router.get('/active-session', async (req, res) => {
   try {
-    const { tableNumber, tenantId, phone } = req.query;
-    if (!tableNumber && !phone) {
-      return res.json(null);
-    }
+    const { tableNumber, tenantId, phone, sessionIds } = req.query;
 
     const recentWindow = new Date(Date.now() - 4 * 60 * 60 * 1000);
     let queryConditions = {
@@ -414,11 +411,51 @@ router.get('/active-session', async (req, res) => {
       queryConditions.tenantId = tenantId;
     }
 
-    if (tableNumber && tableNumber !== 'Takeaway' && tableNumber !== 'Counter' && tableNumber !== 'Online Order') {
-      queryConditions.tableNumber = tableNumber;
-    } else if (phone) {
-      queryConditions['customerDetails.phone'] = phone;
+    const cleanTbl = tableNumber ? String(tableNumber).replace(/^Table\s*/i, '').trim() : '';
+    const tableFilter = cleanTbl ? {
+      $or: [
+        { tableNumber: cleanTbl },
+        { tableNumber: `Table ${cleanTbl}` },
+        { tableNumber: tableNumber }
+      ]
+    } : null;
+
+    // Focus strictly on the authenticated customer or this device's placed session orders
+    if (phone) {
+      const cleanPhone = String(phone).replace(/[^0-9]/g, '');
+      const last10 = cleanPhone.length > 10 ? cleanPhone.slice(-10) : cleanPhone;
+      const phoneFilters = [
+        { 'customerDetails.phone': { $regex: last10, $options: 'i' } },
+        { 'customerDetails.phone': cleanPhone },
+        { 'customerDetails.phone': `+91${last10}` }
+      ];
+      if (tableFilter && tableNumber !== 'Takeaway' && tableNumber !== 'Counter' && tableNumber !== 'Online Order') {
+        queryConditions.$and = [
+          { $or: phoneFilters },
+          tableFilter
+        ];
+      } else {
+        queryConditions.$or = phoneFilters;
+      }
+    } else if (sessionIds) {
+      const ids = String(sessionIds)
+        .split(',')
+        .map(s => s.trim())
+        .filter(id => mongoose.Types.ObjectId.isValid(id));
+      if (ids.length > 0) {
+        if (tableFilter && tableNumber !== 'Takeaway' && tableNumber !== 'Counter' && tableNumber !== 'Online Order') {
+          queryConditions.$and = [
+            { _id: { $in: ids } },
+            tableFilter
+          ];
+        } else {
+          queryConditions._id = { $in: ids };
+        }
+      } else {
+        return res.json(null);
+      }
     } else {
+      // Unauthenticated visitor scanning a table who hasn't placed any order on this device
       return res.json(null);
     }
 
@@ -431,17 +468,33 @@ router.get('/active-session', async (req, res) => {
       return res.json(null);
     }
 
-    // Attach all active/unsettled session orders for this dining table
-    const sessionOrders = await Order.find({
+    // Attach active/unsettled session orders belonging to this customer/device
+    let sessionFilter = {
       tenantId: activeOrder.tenantId?._id || activeOrder.tenantId,
       status: { $in: ['pending', 'confirmed', 'preparing', 'ready', 'served'] },
       paymentStatus: { $ne: 'paid' },
-      createdAt: { $gte: recentWindow },
-      $or: [
-        { tableNumber: activeOrder.tableNumber },
-        { 'customerDetails.phone': activeOrder.customerDetails?.phone }
-      ]
-    }).sort({ createdAt: 1 }).lean();
+      createdAt: { $gte: recentWindow }
+    };
+
+    if (activeOrder.customerDetails?.phone) {
+      sessionFilter['customerDetails.phone'] = activeOrder.customerDetails.phone;
+    } else if (sessionIds) {
+      const ids = String(sessionIds).split(',').map(s => s.trim()).filter(id => mongoose.Types.ObjectId.isValid(id));
+      sessionFilter._id = { $in: ids };
+    } else {
+      sessionFilter._id = activeOrder._id;
+    }
+
+    if (activeOrder.tableNumber) {
+      const ordClean = String(activeOrder.tableNumber).replace(/^Table\s*/i, '').trim();
+      sessionFilter.$or = [
+        { tableNumber: ordClean },
+        { tableNumber: `Table ${ordClean}` },
+        { tableNumber: activeOrder.tableNumber }
+      ];
+    }
+
+    const sessionOrders = await Order.find(sessionFilter).sort({ createdAt: 1 }).lean();
 
     activeOrder.sessionOrders = sessionOrders.length > 0 ? sessionOrders : [activeOrder];
 
@@ -529,13 +582,15 @@ router.get('/history/customer', async (req, res) => {
         const last10 = cleanPhone.length > 10 ? cleanPhone.slice(-10) : cleanPhone;
         conditions.push({ 'customerDetails.phone': { $regex: last10, $options: 'i' } });
         conditions.push({ 'customerDetails.phone': cleanPhone });
+        conditions.push({ 'customerPhone': { $regex: last10, $options: 'i' } });
+        conditions.push({ 'customerPhone': cleanPhone });
+        conditions.push({ 'customer.phone': { $regex: last10, $options: 'i' } });
+        conditions.push({ 'customer.phone': cleanPhone });
         conditions.push({ 'customerDetails.phone': `+91${last10}` });
         conditions.push({ 'customerDetails.phone': `+91 ${last10}` });
       }
-    }
-
-    // 2. Specific Session Order IDs
-    if (sessionIds) {
+    } else if (sessionIds) {
+      // 2. Specific Session Order IDs (Fallback for anonymous guest devices only when not logged in)
       const ids = String(sessionIds)
         .split(',')
         .map(s => s.trim())
@@ -545,18 +600,14 @@ router.get('/history/customer', async (req, res) => {
       }
     }
 
-    // 3. Current Table orders in recent window
-    if (tableNumber && tableNumber !== 'Takeaway' && tableNumber !== 'Counter' && tableNumber !== 'Online Order') {
-      const recentWindow = new Date(Date.now() - 48 * 60 * 60 * 1000);
-      conditions.push({ tableNumber: String(tableNumber), createdAt: { $gte: recentWindow } });
-    }
+    // Note: We deliberately DO NOT query by tableNumber alone without phone/session,
+    // to strictly preserve customer privacy and prevent table QR scans from exposing past guests' orders.
 
     if (conditions.length === 0) {
       return res.json([]);
     }
 
     let query = {
-      status: { $nin: ['cancelled'] },
       $or: conditions
     };
 
