@@ -878,9 +878,43 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
-// GET Analytics with Date Range Filter (Admin)
-router.get('/analytics', auth, checkRole(['admin', 'super_admin']), async (req, res) => {
+// POST /api/orders/:id/rate (Customer feedback & 5-star rating)
+router.post('/:id/rate', async (req, res) => {
   try {
+    const { id } = req.params;
+    const { rating, feedback, feedbackTags } = req.body;
+    const numRating = Math.max(1, Math.min(5, Number(rating) || 5));
+    const order = await Order.findByIdAndUpdate(
+      id,
+      {
+        rating: numRating,
+        feedback: feedback ? String(feedback).trim() : '',
+        feedbackTags: Array.isArray(feedbackTags) ? feedbackTags : [],
+        ratedAt: new Date()
+      },
+      { new: true }
+    );
+    if (!order) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+    res.json({ success: true, message: 'Thank you for your rating!', order });
+  } catch (err) {
+    console.error('Rate order error:', err);
+    res.status(500).json({ error: 'Failed to record rating: ' + err.message });
+  }
+});
+
+// GET Analytics with Date Range Filter (Admin & Authorized Staff)
+router.get('/analytics', auth, async (req, res) => {
+  try {
+    // If not admin/super_admin, verify user has reports or dashboard permission
+    if (req.user.role !== 'admin' && req.user.role !== 'super_admin') {
+      const User = require('../models/User');
+      const u = await User.findById(req.user.id).select('permissions role').lean();
+      if (!u?.permissions?.access_reports && !u?.permissions?.access_dashboard) {
+        return res.status(403).json({ error: 'Access denied. Reports or Dashboard permission required.' });
+      }
+    }
     const tenantId = req.user.tenantId || req.query.tenantId;
     if (!tenantId) return res.status(400).json({ error: 'Tenant ID required' });
 

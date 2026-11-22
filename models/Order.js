@@ -107,6 +107,12 @@ const orderSchema = new mongoose.Schema({
   // Estimated prep time
   estimatedTime: { type: Number }, // Minutes
 
+  // Customer Rating & Feedback
+  rating: { type: Number, min: 1, max: 5 },
+  feedback: { type: String, trim: true },
+  feedbackTags: [{ type: String }],
+  ratedAt: { type: Date },
+
   // Razorpay Route Payment Details
   razorpay: {
     orderId: { type: String, sparse: true, index: true },
