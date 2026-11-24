@@ -89,6 +89,25 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads'), { maxAge: '1
 // Health check endpoint for uptime pingers
 app.get('/health', (req, res) => res.status(200).json({ status: 'ok', timestamp: new Date() }));
 
+// Version check endpoint for seamless zero-downtime frontend updates
+const SERVER_BOOT_TIME = Date.now();
+let feVersion = '1.0.0';
+try {
+  const fePkg = JSON.parse(fs.readFileSync(path.join(__dirname, '../Cafe-Application-FE/package.json'), 'utf8'));
+  feVersion = fePkg.version || '1.0.0';
+} catch (e) {}
+
+app.get('/api/version', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.json({
+    version: feVersion,
+    buildTime: SERVER_BOOT_TIME,
+    timestamp: new Date().toISOString()
+  });
+});
+
 // Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/menu', require('./routes/menu'));
@@ -112,10 +131,26 @@ app.use('/api/analytics', require('./routes/analytics'));
 const clientBuildPath = path.join(__dirname, '../Cafe-Application-FE/build');
 const clientIndexPath = path.join(clientBuildPath, 'index.html');
 if (fs.existsSync(clientBuildPath)) {
-  app.use(express.static(clientBuildPath));
+  app.use(express.static(clientBuildPath, {
+    setHeaders: (res, filePath) => {
+      // Never cache index.html, sw.js, or manifest.json so clients always get latest code immediately
+      if (filePath.endsWith('index.html') || filePath.endsWith('sw.js') || filePath.endsWith('manifest.json')) {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      } else if (filePath.includes(path.sep + 'static' + path.sep)) {
+        // Hashed JS/CSS chunks have content hashes and are safe to cache
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    }
+  }));
+
   app.use((req, res, next) => {
     if (req.method === 'GET' && !req.path.startsWith('/api') && !req.path.startsWith('/uploads') && !req.path.startsWith('/health')) {
       if (fs.existsSync(clientIndexPath)) {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
         return res.sendFile(clientIndexPath, (err) => {
           if (err && !res.headersSent) {
             next();

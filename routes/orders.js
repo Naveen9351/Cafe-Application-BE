@@ -1552,6 +1552,16 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
 
     const actualSettledAmt = actualAmount !== undefined ? Number(actualAmount) : (settledAmount !== undefined ? Number(settledAmount) : null);
 
+    // Normalize incoming paymentMethod
+    let normPaymentMethod = paymentMethod;
+    if (typeof normPaymentMethod === 'string' && normPaymentMethod.trim()) {
+      const low = normPaymentMethod.trim().toLowerCase();
+      if (low.includes('upi') || low.includes('gpay')) normPaymentMethod = 'UPI';
+      else if (low.includes('card')) normPaymentMethod = 'Card';
+      else if (low.includes('khata') || low.includes('borrow') || low.includes('udhar')) normPaymentMethod = 'Khata / Borrow';
+      else if (low.includes('cash')) normPaymentMethod = 'Cash';
+    }
+
     const settledOrders = [];
     const totalOriginalSum = activeOrders.reduce((sum, o) => sum + (Number(o.total) || 0), 0);
 
@@ -1565,14 +1575,30 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
           ord.status = 'served';
         }
       }
-      ord.paymentStatus = paymentStatus || 'paid';
-      if (paymentMethod) ord.paymentMethod = paymentMethod;
+
+      // Preserve already-paid order's paymentMethod!
+      // If an order was already paid (e.g., Round 1 was paid via UPI, and Round 2 is now being settled with Cash),
+      // DO NOT overwrite Round 1's UPI paymentMethod with Cash.
+      const isAlreadyPaid = (ord.paymentStatus === 'paid' || (ord.paidAmount && ord.paidAmount >= ord.total)) && ord.paymentMethod;
+
+      if (!isAlreadyPaid) {
+        ord.paymentStatus = paymentStatus || 'paid';
+        if (normPaymentMethod) {
+          ord.paymentMethod = normPaymentMethod;
+        } else if (!ord.paymentMethod) {
+          ord.paymentMethod = 'Cash';
+        }
+      } else {
+        ord.paymentStatus = 'paid';
+      }
 
       // Mark all items as paid and served
       ord.items.forEach(it => {
         it.isPaid = true;
         if (!it.paidAt) it.paidAt = new Date();
-        if (!it.itemPaymentMethod && paymentMethod) it.itemPaymentMethod = paymentMethod;
+        if (!it.itemPaymentMethod) {
+          it.itemPaymentMethod = ord.paymentMethod || normPaymentMethod || 'Cash';
+        }
         if (it.itemStatus !== 'served') it.itemStatus = 'served';
       });
       ord.paidAmount = ord.total;
@@ -1616,8 +1642,16 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
     }
 
     // Enterprise Dining Session Consolidation:
-    // If multiple rounds (e.g. Round 1, 2, 3) were settled on this table, consolidate into 1 single completed order
-    if (shouldFreeTable && activeOrders.length > 1) {
+    // Only consolidate if all orders have the same paymentMethod!
+    // If orders have different payment methods (e.g. Order 1 = UPI, Order 2 = Cash),
+    // KEEP THEM AS SEPARATE COMPLETED ORDERS so daily sales breakdown by payment method remains 100% accurate!
+    const allSamePaymentMethod = activeOrders.length > 1 && activeOrders.every(o => {
+      const m1 = String(o.paymentMethod || '').trim().toLowerCase();
+      const m0 = String(activeOrders[0].paymentMethod || '').trim().toLowerCase();
+      return m1 === m0;
+    });
+
+    if (shouldFreeTable && activeOrders.length > 1 && allSamePaymentMethod) {
       const primaryOrder = activeOrders[0];
       let combinedSubTotal = Number(primaryOrder.subTotal) || 0;
       let combinedTotal = Number(primaryOrder.total) || 0;
@@ -1679,7 +1713,7 @@ router.put('/table/:tableNumber/settle', auth, async (req, res) => {
       primaryOrder.settledAmount = primaryOrder.paidAmount;
       primaryOrder.status = 'completed';
       primaryOrder.paymentStatus = paymentStatus || 'paid';
-      if (paymentMethod) primaryOrder.paymentMethod = paymentMethod;
+      if (!primaryOrder.paymentMethod) primaryOrder.paymentMethod = normPaymentMethod || 'Cash';
 
       primaryOrder.items.forEach(it => {
         it.isPaid = true;
