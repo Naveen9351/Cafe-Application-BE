@@ -255,6 +255,51 @@ router.post('/service-request', async (req, res) => {
     const cleanTable = String(tableNumber).trim().replace(/^Table\s*#?/i, '');
     const targetTenant = tenantId || 'default';
 
+    // Normalize paymentMethod if provided
+    let normalizedMethod = paymentMethod ? String(paymentMethod).trim() : null;
+    if (normalizedMethod) {
+      if (/upi/i.test(normalizedMethod)) {
+        normalizedMethod = 'UPI';
+      } else if (/cash/i.test(normalizedMethod)) {
+        normalizedMethod = 'Cash';
+      } else if (/card/i.test(normalizedMethod)) {
+        normalizedMethod = 'Card';
+      }
+    }
+
+    // Helper function to update unpaid orders' paymentMethod
+    const updateUnpaidOrdersPaymentMethod = async (method) => {
+      if (!method) return;
+      try {
+        const cleanTbl = cleanTable.replace(/^Table\s*/i, '').trim();
+        const escTbl = cleanTbl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const orderConditions = [
+          { tableNumber: cleanTbl },
+          { tableNumber: `Table ${cleanTbl}` },
+          { tableNumber: { $regex: new RegExp(`^Table\\s*${escTbl}$`, 'i') } }
+        ];
+        if (req.body.orderIds && Array.isArray(req.body.orderIds) && req.body.orderIds.length > 0) {
+          const validIds = req.body.orderIds.filter(id => mongoose.Types.ObjectId.isValid(id));
+          if (validIds.length > 0) {
+            orderConditions.push({ _id: { $in: validIds } });
+          }
+        }
+        const filter = {
+          $or: orderConditions,
+          paymentStatus: { $ne: 'paid' }
+        };
+        if (targetTenant && targetTenant !== 'default') {
+          filter.tenantId = targetTenant;
+        }
+        await Order.updateMany(filter, { $set: { paymentMethod: method } });
+        if (global.io && targetTenant && targetTenant !== 'default') {
+          global.io.to(targetTenant.toString()).emit('orderUpdate', { tableNumber: cleanTable, paymentMethod: method });
+        }
+      } catch (ordUpdateErr) {
+        console.error('Error updating order paymentMethod from service-request:', ordUpdateErr.message);
+      }
+    };
+
     // Anti-spam rate limit: check if same table & type requested within last 45 seconds
     const fortyFiveSecsAgo = new Date(Date.now() - 45 * 1000);
     const recentRequest = await ServiceRequest.findOne({
@@ -266,6 +311,11 @@ router.post('/service-request', async (req, res) => {
     });
 
     if (recentRequest) {
+      if (normalizedMethod && recentRequest.paymentMethod !== normalizedMethod) {
+        recentRequest.paymentMethod = normalizedMethod;
+        await recentRequest.save();
+        await updateUnpaidOrdersPaymentMethod(normalizedMethod);
+      }
       return res.json({
         success: true,
         alreadyActive: true,
@@ -280,7 +330,7 @@ router.post('/service-request', async (req, res) => {
       customerName: customerName || 'Guest Diner',
       customerPhone: customerPhone || '',
       type: type || 'call_waiter',
-      paymentMethod: paymentMethod || null,
+      paymentMethod: normalizedMethod || null,
       amount: Number(amount) || 0,
       notes: notes || '',
       status: 'pending'
@@ -288,7 +338,7 @@ router.post('/service-request', async (req, res) => {
 
     await newRequest.save();
 
-    // If bill requested, mark table status in DB
+    // If bill requested, mark table status in DB and update unpaid order paymentMethods
     if (type === 'request_bill') {
       try {
         await Table.findOneAndUpdate(
@@ -296,6 +346,10 @@ router.post('/service-request', async (req, res) => {
           { status: 'bill_requested' }
         );
       } catch (tErr) {}
+
+      if (normalizedMethod) {
+        await updateUnpaidOrdersPaymentMethod(normalizedMethod);
+      }
     }
 
     // Live real-time broadcast via Socket.io

@@ -93,6 +93,14 @@ router.post(
       let originalTableNumber = null;
       let mergedIntoTarget = null;
 
+      // Normalize Payment Method (UPI vs Cash)
+      let normalizedPaymentMethod = req.body.paymentMethod || 'UPI';
+      if (typeof normalizedPaymentMethod === 'string') {
+        const lower = normalizedPaymentMethod.toLowerCase().trim();
+        if (lower === 'cash' || lower === 'counter') normalizedPaymentMethod = 'Cash';
+        else if (lower === 'upi' || lower === 'qr' || lower === 'online') normalizedPaymentMethod = 'UPI';
+      }
+
       // 1. Fetch all items (Security: Verify prices server-side)
       const cleanItemId = (raw) => {
         if (!raw) return '';
@@ -236,7 +244,7 @@ router.post(
             itemStatus,
             isPaid: itemIsPaid,
             paidAt: itemIsPaid ? new Date() : null,
-            itemPaymentMethod: clientItem.itemPaymentMethod || req.body.paymentMethod || null,
+            itemPaymentMethod: clientItem.itemPaymentMethod || normalizedPaymentMethod || null,
             isDirect: isItemDirect
           });
         } else if (clientItem.name && (clientItem.price !== undefined && clientItem.price !== null)) {
@@ -260,7 +268,7 @@ router.post(
             itemStatus,
             isPaid: itemIsPaid,
             paidAt: itemIsPaid ? new Date() : null,
-            itemPaymentMethod: clientItem.itemPaymentMethod || req.body.paymentMethod || null,
+            itemPaymentMethod: clientItem.itemPaymentMethod || normalizedPaymentMethod || null,
             isDirect: isItemDirect
           });
         }
@@ -364,7 +372,7 @@ router.post(
         total,
         paidAmount: initialPaidAmount,
         settledAmount: req.body.settledAmount !== undefined ? Number(req.body.settledAmount) : (calculatedPaymentStatus === 'paid' ? total : undefined),
-        paymentMethod: req.body.paymentMethod || 'UPI',
+        paymentMethod: normalizedPaymentMethod,
         orderType: req.body.orderType || (tableNumber === 'Takeaway' || tableNumber === 'Counter' ? 'takeaway' : 'dine_in'),
         customerDetails: customerDetails || {},
         notes: req.body.notes || req.body.specialInstructions || '',
@@ -709,14 +717,53 @@ router.get('/', auth, async (req, res) => {
       const escapedQ = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const numOnly = q.replace(/\D/g, '');
 
+      // Intelligent table number extraction:
+      // Handles searches like "Table 2", "table 2", "Table-2", "T2", "T-2", "Table no. 2", "2"
+      const tablePrefixMatch = q.match(/^(?:table\s*(?:no\.?|#|-)?\s*|t-?\s*)(\w+)/i);
+      const cleanTableCandidate = tablePrefixMatch ? tablePrefixMatch[1].trim() : (numOnly ? numOnly.trim() : null);
+
       const searchOr = [
         { orderNumber: { $regex: escapedQ, $options: 'i' } },
         { 'customerDetails.name': { $regex: escapedQ, $options: 'i' } },
         { 'customerDetails.phone': { $regex: escapedQ, $options: 'i' } },
         { customerName: { $regex: escapedQ, $options: 'i' } },
         { customerPhone: { $regex: escapedQ, $options: 'i' } },
-        { tableNumber: { $regex: escapedQ, $options: 'i' } }
+        { tableNumber: { $regex: escapedQ, $options: 'i' } },
+        { table: { $regex: escapedQ, $options: 'i' } },
+        { originalTable: { $regex: escapedQ, $options: 'i' } }
       ];
+
+      if (cleanTableCandidate) {
+        const escCandidate = cleanTableCandidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        searchOr.push({ tableNumber: cleanTableCandidate });
+        searchOr.push({ tableNumber: { $regex: new RegExp(`^(table\\s*(no\\.?|#|-)?\\s*)?0*${escCandidate}$`, 'i') } });
+        searchOr.push({ tableNumber: { $regex: new RegExp(`^t-?0*${escCandidate}$`, 'i') } });
+        searchOr.push({ table: cleanTableCandidate });
+        searchOr.push({ originalTable: cleanTableCandidate });
+      }
+
+      // Safe $expr string comparison in case tableNumber was saved with different type
+      searchOr.push({
+        $expr: {
+          $regexMatch: {
+            input: { $toString: { $ifNull: ['$tableNumber', ''] } },
+            regex: escapedQ,
+            options: 'i'
+          }
+        }
+      });
+      if (cleanTableCandidate) {
+        const escCandidate = cleanTableCandidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        searchOr.push({
+          $expr: {
+            $regexMatch: {
+              input: { $toString: { $ifNull: ['$tableNumber', ''] } },
+              regex: `^(table\\s*(no\\.?|#|-)?\\s*)?0*${escCandidate}$`,
+              options: 'i'
+            }
+          }
+        });
+      }
 
       if (numOnly && numOnly.length >= 3) {
         searchOr.push({ 'customerDetails.phone': { $regex: numOnly } });
