@@ -93,12 +93,14 @@ router.post(
       let originalTableNumber = null;
       let mergedIntoTarget = null;
 
-      // Normalize Payment Method (UPI vs Cash)
-      let normalizedPaymentMethod = req.body.paymentMethod || 'UPI';
-      if (typeof normalizedPaymentMethod === 'string') {
-        const lower = normalizedPaymentMethod.toLowerCase().trim();
+      // Normalize Payment Method (UPI vs Cash) if provided
+      let normalizedPaymentMethod = null;
+      if (req.body.paymentMethod && typeof req.body.paymentMethod === 'string' && req.body.paymentMethod.trim() !== '') {
+        const lower = req.body.paymentMethod.toLowerCase().trim();
         if (lower === 'cash' || lower === 'counter') normalizedPaymentMethod = 'Cash';
         else if (lower === 'upi' || lower === 'qr' || lower === 'online') normalizedPaymentMethod = 'UPI';
+        else if (lower === 'card' || lower === 'debit' || lower === 'credit') normalizedPaymentMethod = 'Card';
+        else normalizedPaymentMethod = req.body.paymentMethod.trim();
       }
 
       // 1. Fetch all items (Security: Verify prices server-side)
@@ -244,7 +246,7 @@ router.post(
             itemStatus,
             isPaid: itemIsPaid,
             paidAt: itemIsPaid ? new Date() : null,
-            itemPaymentMethod: clientItem.itemPaymentMethod || normalizedPaymentMethod || null,
+            itemPaymentMethod: itemIsPaid ? (clientItem.itemPaymentMethod || normalizedPaymentMethod || 'Cash') : null,
             isDirect: isItemDirect
           });
         } else if (clientItem.name && (clientItem.price !== undefined && clientItem.price !== null)) {
@@ -268,7 +270,7 @@ router.post(
             itemStatus,
             isPaid: itemIsPaid,
             paidAt: itemIsPaid ? new Date() : null,
-            itemPaymentMethod: clientItem.itemPaymentMethod || normalizedPaymentMethod || null,
+            itemPaymentMethod: itemIsPaid ? (clientItem.itemPaymentMethod || normalizedPaymentMethod || 'Cash') : null,
             isDirect: isItemDirect
           });
         }
@@ -372,7 +374,8 @@ router.post(
         total,
         paidAmount: initialPaidAmount,
         settledAmount: req.body.settledAmount !== undefined ? Number(req.body.settledAmount) : (calculatedPaymentStatus === 'paid' ? total : undefined),
-        paymentMethod: normalizedPaymentMethod,
+        // Payment method is ONLY set once the order is actually paid! If payment is pending (unpaid / KOT), paymentMethod remains null.
+        paymentMethod: calculatedPaymentStatus === 'paid' ? (normalizedPaymentMethod || 'Cash') : null,
         orderType: req.body.orderType || (tableNumber === 'Takeaway' || tableNumber === 'Counter' ? 'takeaway' : 'dine_in'),
         customerDetails: customerDetails || {},
         notes: req.body.notes || req.body.specialInstructions || '',

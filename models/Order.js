@@ -61,7 +61,7 @@ const orderSchema = new mongoose.Schema({
   discountReason: { type: String, default: '' },
   settledAmount: { type: Number },
   paidAmount: { type: Number, default: 0 },
-  paymentMethod: { type: String, default: 'UPI' },
+  paymentMethod: { type: String, default: null },
 
   status: {
     type: String,
