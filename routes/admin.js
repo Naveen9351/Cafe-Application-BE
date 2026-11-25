@@ -9,6 +9,7 @@ const auth = require('../middleware/auth');
 const MenuItem = require('../models/MenuItem');
 const Order = require('../models/Order');
 const User = require('../models/User');
+const ServiceRequest = require('../models/ServiceRequest');
 
 // Configure Cloudinary
 try {
@@ -287,7 +288,20 @@ router.get('/notifications', auth, async (req, res) => {
         .lean();
     }
 
-    const notifications = orders.map(ord => {
+    // Also fetch ServiceRequests (bill requests & staff calls)
+    let serviceAlerts = await ServiceRequest.find({ ...query, createdAt: { $gte: sevenDaysAgo } })
+      .sort({ createdAt: -1 })
+      .limit(60)
+      .lean();
+
+    if (!serviceAlerts || serviceAlerts.length === 0) {
+      serviceAlerts = await ServiceRequest.find(query)
+        .sort({ createdAt: -1 })
+        .limit(30)
+        .lean();
+    }
+
+    const orderNotifications = (orders || []).map(ord => {
       const isSettled = ord.status === 'completed' || ord.paymentStatus === 'paid';
       let notifType = 'new_order';
       let title = `New Order #${ord.orderNumber || ord._id.toString().slice(-5).toUpperCase()}`;
@@ -321,7 +335,33 @@ router.get('/notifications', auth, async (req, res) => {
       };
     });
 
-    res.json({ success: true, notifications, count: notifications.length });
+    const serviceNotifications = (serviceAlerts || []).map(sr => {
+      const isBill = sr.type === 'request_bill';
+      const isPending = sr.status === 'pending';
+      const title = isBill ? `💳 Table ${sr.tableNumber} Requested Bill` : `🛎️ Table ${sr.tableNumber} Called Staff`;
+      const message = isBill
+        ? `Table ${sr.tableNumber} requested bill of ₹${Math.round(sr.amount || 0)} (${sr.paymentMethod || 'UPI'})${sr.customerName && sr.customerName !== 'Guest Diner' ? ` • ${sr.customerName}` : ''}${isPending ? ' • [Pending]' : ' • [Attended]'}`
+        : `${sr.customerName || 'Guest Diner'} at Table ${sr.tableNumber} called for staff assistance`;
+
+      return {
+        id: `sr_${sr._id}`,
+        serviceRequestId: sr._id,
+        tableNumber: sr.tableNumber,
+        type: isBill ? 'bill_requested' : 'call_waiter',
+        title,
+        message,
+        amount: Math.round(sr.amount || 0),
+        paymentMethod: sr.paymentMethod,
+        status: sr.status,
+        timestamp: sr.createdAt
+      };
+    });
+
+    const allNotifications = [...orderNotifications, ...serviceNotifications].sort(
+      (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
+    );
+
+    res.json({ success: true, notifications: allNotifications, count: allNotifications.length });
   } catch (err) {
     console.error('Get notifications error:', err);
     res.status(500).json({ error: 'Server error' });

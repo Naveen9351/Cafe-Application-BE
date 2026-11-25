@@ -372,9 +372,11 @@ router.post('/service-request', async (req, res) => {
       // 1. Broadcast to tenant room
       if (targetTenant && targetTenant !== 'default') {
         global.io.to(targetTenant.toString()).emit('tableServiceAlert', alertPayload);
+        global.io.to(targetTenant.toString()).emit('tablesUpdated');
       }
       // 2. Also emit to all connected staff sockets (fallback for unassigned rooms)
       global.io.emit('tableServiceAlert', alertPayload);
+      global.io.emit('tablesUpdated');
     }
 
     console.log(`🛎️ Table service alert dispatched: Table ${cleanTable} - ${newRequest.type}`);

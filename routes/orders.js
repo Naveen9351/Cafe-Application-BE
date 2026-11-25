@@ -842,25 +842,47 @@ router.get('/', auth, async (req, res) => {
         }
       }
 
+      // A valid paid order is either explicitly paymentStatus === 'paid' OR (status === 'completed' and not pending/unpaid/failed)
+      const isPaidCond = {
+        $or: [
+          { $eq: [{ $toLower: { $ifNull: ['$paymentStatus', ''] } }, 'paid'] },
+          {
+            $and: [
+              { $eq: ['$status', 'completed'] },
+              { $not: { $in: [{ $toLower: { $ifNull: ['$paymentStatus', ''] } }, ['pending', 'unpaid', 'failed']] } }
+            ]
+          }
+        ]
+      };
+
       const statsAgg = await Order.aggregate([
         { $match: tenantMatch },
         {
           $group: {
             _id: null,
             totalOrders: { $sum: 1 },
-            completedCount: { $sum: { $cond: [{ $in: ['$status', ['completed', 'served']] }, 1, 0] } },
+            completedCount: { $sum: { $cond: [isPaidCond, 1, 0] } },
             cancelledCount: { $sum: { $cond: [{ $eq: ['$status', 'cancelled'] }, 1, 0] } },
             activeCount: {
               $sum: {
-                $cond: [{ $not: { $in: ['$status', ['completed', 'served', 'cancelled']] } }, 1, 0]
+                $cond: [
+                  {
+                    $and: [
+                      { $ne: ['$status', 'cancelled'] },
+                      { $not: isPaidCond }
+                    ]
+                  },
+                  1,
+                  0
+                ]
               }
             },
             pendingCount: { $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] } },
             totalSales: {
               $sum: {
                 $cond: [
-                  { $in: ['$status', ['completed', 'served']] },
-                  { $ifNull: ['$total', { $ifNull: ['$totalAmount', { $ifNull: ['$finalAmount', 0] }] }] },
+                  isPaidCond,
+                  { $ifNull: ['$settledAmount', { $ifNull: ['$total', { $ifNull: ['$totalAmount', { $ifNull: ['$finalAmount', 0] }] }] }] },
                   0
                 ]
               }
